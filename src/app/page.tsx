@@ -74,9 +74,10 @@ export default function HomePage() {
           <span>Made Simple</span>
         </h1>
         <p className="hero-subtitle">
-          Live 8-hour funding rates from <strong>15 exchanges</strong> — Binance, Bybit, OKX, Bitget,
+          Live funding rates from <strong>15 exchanges</strong> — Binance, Bybit, OKX, Bitget,
           KuCoin, Gate.io, MEXC, BingX, HTX, BitMEX, dYdX, Hyperliquid, Phemex, BloFin &amp; Delta Exchange.
-          Spot cross-exchange spread opportunities in real time.
+          Fetches <strong>all 200–400+ perpetual pairs</strong>, sorted by max spread.
+          Funding intervals (1h/4h/8h) shown per coin — hover any rate for its annualized return.
         </p>
       </section>
 

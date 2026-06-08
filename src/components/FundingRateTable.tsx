@@ -37,6 +37,14 @@ const MIN_SPREAD_OPTIONS: { label: string; value: number; pct: string }[] = [
   { label: '≥ 2%',      value: 0.02,   pct: '2%'   },
 ];
 
+const MIN_VOLUME_OPTIONS: { label: string; value: number }[] = [
+  { label: 'Any vol',  value: 0          },
+  { label: '≥ $1M',   value: 1_000_000  },
+  { label: '≥ $10M',  value: 10_000_000 },
+  { label: '≥ $50M',  value: 50_000_000 },
+  { label: '≥ $100M', value: 100_000_000},
+];
+
 /* ─── Exchange registry ──────────────────────────────────────────────────── */
 // Ordered by global popularity / trading volume
 const ALL_EXCHANGES: { key: keyof FundingRateEntry; label: string; group: 'top10' | 'more' }[] = [
@@ -63,11 +71,26 @@ const DEFAULT_VISIBLE = new Set<string>(
 );
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
-function fmtRate(r: number | null) {
+/** Format a funding rate. If intervalHours is provided, show the interval badge. */
+function fmtRate(r: number | null, intervalHours?: number) {
   if (r === null) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
   const pct = (r * 100).toFixed(4);
   const cls = r > 0 ? 'rate-positive' : r < 0 ? 'rate-negative' : 'rate-neutral';
-  return <span className={cls}>{r > 0 ? '+' : ''}{pct}%</span>;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+      <span className={cls}>{r > 0 ? '+' : ''}{pct}%</span>
+      {intervalHours !== undefined && (
+        <span className="interval-badge">{intervalHours}h</span>
+      )}
+    </span>
+  );
+}
+
+/** Compute annualized rate: rate × (8760 / intervalHours) */
+function annualizedRate(rate: number, intervalHours: number): string {
+  const annual = rate * (8760 / intervalHours) * 100;
+  const sign = annual >= 0 ? '+' : '';
+  return `${sign}${annual.toFixed(1)}% p.a.`;
 }
 
 function fmtPrice(p: number) {
@@ -145,6 +168,7 @@ export default function FundingRateTable({
   const [search,     setSearch]    = useState('');
   const [pairLimit,  setPairLimit] = useState<number | null>(null);
   const [minSpread,  setMinSpread] = useState<number>(0);
+  const [minVolume,  setMinVolume] = useState<number>(0);
 
   // ── Exchange selector ─────────────────────────────────────────────────────
   const [visibleExchanges, setVisibleExchanges] = useState<Set<string>>(new Set(DEFAULT_VISIBLE));
@@ -234,6 +258,9 @@ export default function FundingRateTable({
     // Filter by computed spread (not server-side maxSpread)
     if (minSpread > 0) rows = rows.filter((r) => r.computedSpread >= minSpread);
 
+    // Filter by minimum 24h volume
+    if (minVolume > 0) rows = rows.filter((r) => r.volume24h >= minVolume);
+
     // Symbol search
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -261,19 +288,20 @@ export default function FundingRateTable({
 
     if (pairLimit !== null) rows = rows.slice(0, pairLimit);
     return rows;
-  }, [enrichedData, oppFilter, minSpread, search, sortKey, sortDir, pairLimit]);
+  }, [enrichedData, oppFilter, minSpread, minVolume, search, sortKey, sortDir, pairLimit]);
 
   const totalAfterFilters = useMemo(() => {
     let rows = [...enrichedData];
     if (oppFilter !== 'all') rows = rows.filter((r) => r.computedOpportunity === oppFilter);
     if (minSpread > 0)       rows = rows.filter((r) => r.computedSpread >= minSpread);
+    if (minVolume > 0)       rows = rows.filter((r) => r.volume24h >= minVolume);
     if (search.trim()) {
       const q = search.toLowerCase();
       rows = rows.filter((r) =>
         r.symbol.toLowerCase().includes(q) || r.baseAsset.toLowerCase().includes(q));
     }
     return rows.length;
-  }, [enrichedData, oppFilter, minSpread, search]);
+  }, [enrichedData, oppFilter, minSpread, minVolume, search]);
 
   // ── Sub-components ────────────────────────────────────────────────────────
   function SortIcon({ k }: { k: SortKey }) {
@@ -292,9 +320,9 @@ export default function FundingRateTable({
   const progressPct       = ((AUTO_REFRESH_SEC - countdown) / AUTO_REFRESH_SEC) * 100;
   const activeFiltersCount =
     (oppFilter !== 'all' ? 1 : 0) + (minSpread > 0 ? 1 : 0) +
-    (pairLimit !== null ? 1 : 0) + (search ? 1 : 0);
-  // Market + Price + exchanges + MaxSpread + 24hVol + NextFunding + Opp + Trade
-  const totalCols = 2 + activeExchanges.length + 5;
+    (minVolume > 0 ? 1 : 0) + (pairLimit !== null ? 1 : 0) + (search ? 1 : 0);
+  // Market + Price + exchanges + MaxSpread + Interval + 24hVol + NextFunding + Opp + Trade
+  const totalCols = 2 + activeExchanges.length + 6;
 
   return (
     <>
@@ -304,7 +332,7 @@ export default function FundingRateTable({
           <div className="control-group">
             <div className="control-label">
               <LayoutList size={13} style={{ color: 'var(--accent-blue)' }} />
-              Display
+              Results
             </div>
             <div className="control-pills" role="group" aria-label="Number of pairs to display">
               {PAIR_LIMIT_OPTIONS.map((opt) => {
@@ -345,10 +373,33 @@ export default function FundingRateTable({
             </div>
           </div>
 
+          <div className="control-divider" aria-hidden="true" />
+
+          <div className="control-group">
+            <div className="control-label">
+              <Eye size={13} style={{ color: 'var(--warning)' }} />
+              Min 24h Vol
+            </div>
+            <div className="control-pills" role="group" aria-label="Minimum 24h volume filter">
+              {MIN_VOLUME_OPTIONS.map((opt) => {
+                const active = minVolume === opt.value;
+                return (
+                  <button
+                    key={String(opt.value)}
+                    className={`cpill ${active ? 'cpill-active cpill-orange' : ''}`}
+                    onClick={() => setMinVolume(opt.value)}
+                    aria-pressed={active}
+                    id={`min-vol-${opt.value}`}
+                  >{opt.label}</button>
+                );
+              })}
+            </div>
+          </div>
+
           {activeFiltersCount > 0 && (
             <button
               className="reset-filters-btn"
-              onClick={() => { setPairLimit(null); setMinSpread(0); setOppFilter('all'); setSearch(''); }}
+              onClick={() => { setPairLimit(null); setMinSpread(0); setMinVolume(0); setOppFilter('all'); setSearch(''); }}
               aria-label="Reset all filters"
               id="reset-filters-btn"
             >
@@ -567,6 +618,11 @@ export default function FundingRateTable({
                     Max Spread <SortIcon k="maxSpread" />
                   </span>
                 </th>
+                <th className="right" title="Funding interval from Binance. Hover a rate cell for annualized return.">
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
+                    <Clock size={10} style={{ opacity: 0.6 }} /> Interval
+                  </span>
+                </th>
                 <th className={`right ${sortKey === 'volume24h' ? 'sorted' : ''}`} onClick={() => handleSort('volume24h')}>
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
                     24h Vol <SortIcon k="volume24h" />
@@ -590,7 +646,7 @@ export default function FundingRateTable({
                     No pairs match the current filters.{' '}
                     <button
                       style={{ background: 'none', border: 'none', color: 'var(--accent-blue)', cursor: 'pointer', textDecoration: 'underline', fontSize: 'inherit' }}
-                      onClick={() => { setPairLimit(null); setMinSpread(0); setOppFilter('all'); setSearch(''); }}
+                      onClick={() => { setPairLimit(null); setMinSpread(0); setMinVolume(0); setOppFilter('all'); setSearch(''); }}
                     >Reset filters</button>
                   </td>
                 </tr>
@@ -626,11 +682,24 @@ export default function FundingRateTable({
                       </div>
                     </td>
 
-                    {activeExchanges.map((ex) => (
-                      <td key={ex.key as string} className="right">
-                        {fmtRate(row[ex.key] as number | null)}
-                      </td>
-                    ))}
+                    {activeExchanges.map((ex) => {
+                      const rate = row[ex.key] as number | null;
+                      // Show interval badge only on the Binance column
+                      const isBinance = ex.key === 'binance';
+                      const intervalHours = isBinance ? row.fundingIntervalHours : undefined;
+                      const tooltipText = rate !== null
+                        ? `Annualized: ${annualizedRate(rate, row.fundingIntervalHours)}`
+                        : undefined;
+                      return (
+                        <td
+                          key={ex.key as string}
+                          className="right rate-cell"
+                          title={tooltipText}
+                        >
+                          {fmtRate(rate, intervalHours)}
+                        </td>
+                      );
+                    })}
 
                     <td className="right">
                       <div
@@ -655,6 +724,18 @@ export default function FundingRateTable({
                               : 'var(--text-muted)',
                           }}
                         />
+                      </div>
+                    </td>
+
+                    {/* ── Interval column ─────────────────────────────────────────── */}
+                    <td className="right">
+                      <div
+                        className="interval-cell"
+                        title={`Funds every ${row.fundingIntervalHours}h · Annualized rate (Binance): ${row.binance !== null ? annualizedRate(row.binance, row.fundingIntervalHours) : 'N/A'}`}
+                      >
+                        <span className={`interval-pill ivl-${row.fundingIntervalHours}h`}>
+                          {row.fundingIntervalHours}h
+                        </span>
                       </div>
                     </td>
 
@@ -702,7 +783,9 @@ export default function FundingRateTable({
           )}{' '}
           of <strong style={{ color: 'var(--text-secondary)' }}>{data.length}</strong> pairs
           {minSpread > 0 && <> · spread ≥ {(minSpread * 100).toFixed(1)}%</>}
-          {' '}· 8-hour funding rates · {activeExchanges.length} exchange{activeExchanges.length !== 1 ? 's' : ''} visible
+          {minVolume > 0 && <> · vol ≥ {fmtLarge(minVolume)}</>}
+          {' '}· Sorted by max spread · {activeExchanges.length} exchange{activeExchanges.length !== 1 ? 's' : ''} visible
+          {' '}· Hover a rate for annualised return
         </span>
         <span>
           Last updated:{' '}
@@ -713,6 +796,38 @@ export default function FundingRateTable({
 
       {/* ── Scoped styles ────────────────────────────────────────────────────── */}
       <style>{`
+        /* ── Interval badge (shown next to Binance rate) ── */
+        .interval-badge {
+          display: inline-flex; align-items: center;
+          padding: 1px 5px; border-radius: 4px;
+          font-size: 0.6rem; font-weight: 700; letter-spacing: 0.04em;
+          background: rgba(99,102,241,0.15); color: #818cf8;
+          border: 1px solid rgba(99,102,241,0.25); white-space: nowrap; flex-shrink: 0;
+        }
+
+        /* ── Interval column cell ── */
+        .interval-cell { display: flex; justify-content: flex-end; }
+        .interval-pill {
+          display: inline-flex; align-items: center; justify-content: center;
+          min-width: 32px; padding: 2px 7px; border-radius: 5px;
+          font-size: 0.72rem; font-weight: 700; letter-spacing: 0.03em;
+          cursor: default; white-space: nowrap;
+        }
+        .interval-pill.ivl-1h  { background: rgba(239,68,68,0.15);  color: #f87171; border: 1px solid rgba(239,68,68,0.3);  }
+        .interval-pill.ivl-4h  { background: rgba(245,158,11,0.15); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); }
+        .interval-pill.ivl-8h  { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
+        /* fallback for any other interval */
+        .interval-pill { background: rgba(99,102,241,0.12); color: #a5b4fc; border: 1px solid rgba(99,102,241,0.2); }
+
+        /* ── Rate cell with tooltip ── */
+        .rate-cell { cursor: help; }
+
+        /* ── Orange volume pill ── */
+        .cpill-active.cpill-orange {
+          background: #f59e0b; border-color: #f59e0b;
+          box-shadow: 0 0 14px rgba(245,158,11,0.35);
+        }
+
         /* ── Control Panel ── */
         .control-panel {
           background: rgba(255,255,255,0.025);
