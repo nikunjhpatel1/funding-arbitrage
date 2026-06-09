@@ -1,27 +1,27 @@
 import { NextResponse } from 'next/server';
-
+export const maxDuration = 60;
 // ─── API endpoints ────────────────────────────────────────────────────────────
 // Batch exchanges (return all pairs in one call)
-const BINANCE_PREMIUM   = 'https://fapi.binance.com/fapi/v1/premiumIndex';
-const BINANCE_TICKER    = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
+const BINANCE_PREMIUM = 'https://fapi.binance.com/fapi/v1/premiumIndex';
+const BINANCE_TICKER = 'https://fapi.binance.com/fapi/v1/ticker/24hr';
 const BINANCE_FUND_INFO = 'https://fapi.binance.com/fapi/v1/fundingInfo';   // ← interval data
-const BYBIT_TICKERS     = 'https://api.bybit.com/v5/market/tickers?category=linear';
-const GATE_CONTRACTS    = 'https://api.gateio.ws/api/v4/futures/usdt/contracts';
-const BITMEX_INSTR      = `https://www.bitmex.com/api/v1/instrument?filter=${encodeURIComponent('{"typ":"FFWCSX"}')}&count=500&reverse=false`;
-const PHEMEX_TICKERS    = 'https://api.phemex.com/md/v3/ticker/24hr/all';
-const DELTA_PRODUCTS    = 'https://api.delta.exchange/v2/products?contract_types=perpetual_futures';
-const DELTA_TICKERS     = 'https://api.delta.exchange/v2/tickers';
-const DYDX_MARKETS      = 'https://indexer.dydx.trade/v4/perpetualMarkets';
-const HL_INFO           = 'https://api.hyperliquid.xyz/info';
+const BYBIT_TICKERS = 'https://api.bybit.com/v5/market/tickers?category=linear';
+const GATE_CONTRACTS = 'https://api.gateio.ws/api/v4/futures/usdt/contracts';
+const BITMEX_INSTR = `https://www.bitmex.com/api/v1/instrument?filter=${encodeURIComponent('{"typ":"FFWCSX"}')}&count=500&reverse=false`;
+const PHEMEX_TICKERS = 'https://api.phemex.com/md/v3/ticker/24hr/all';
+const DELTA_PRODUCTS = 'https://api.delta.exchange/v2/products?contract_types=perpetual_futures';
+const DELTA_TICKERS = 'https://api.delta.exchange/v2/tickers';
+const DYDX_MARKETS = 'https://indexer.dydx.trade/v4/perpetualMarkets';
+const HL_INFO = 'https://api.hyperliquid.xyz/info';
 
 // Per-symbol exchanges (one request per pair)
-const OKX_FUNDING       = (b: string) => `https://www.okx.com/api/v5/public/funding-rate?instId=${b}-USDT-SWAP`;
-const BITGET_FUND_RATE  = (b: string) => `https://api.bitget.com/api/v2/mix/market/current-fund-rate?symbol=${b}USDT&productType=usdt-futures`;
-const MEXC_FUND_RATE    = (b: string) => `https://contract.mexc.com/api/v1/contract/funding_rate/${b}_USDT`;
-const KUCOIN_FUND_RATE  = (sym: string) => `https://api-futures.kucoin.com/api/v1/funding-rate/${sym}/current`;
-const BINGX_FUND_RATE   = (b: string) => `https://open-api.bingx.com/openApi/swap/v2/quote/fundingRate?symbol=${b}-USDT`;
-const HTX_FUND_RATE     = (b: string) => `https://api.hbdm.com/swap-api/v1/swap_funding_rate?contract_code=${b}-USD`;
-const BLOFIN_FUND_RATE  = (b: string) => `https://openapi.blofin.com/api/v1/market/funding-rate?instId=${b}-USDT`;
+const OKX_FUNDING = (b: string) => `https://www.okx.com/api/v5/public/funding-rate?instId=${b}-USDT-SWAP`;
+const BITGET_FUND_RATE = (b: string) => `https://api.bitget.com/api/v2/mix/market/current-fund-rate?symbol=${b}USDT&productType=usdt-futures`;
+const MEXC_FUND_RATE = (b: string) => `https://contract.mexc.com/api/v1/contract/funding_rate/${b}_USDT`;
+const KUCOIN_FUND_RATE = (sym: string) => `https://api-futures.kucoin.com/api/v1/funding-rate/${sym}/current`;
+const BINGX_FUND_RATE = (b: string) => `https://open-api.bingx.com/openApi/swap/v2/quote/fundingRate?symbol=${b}-USDT`;
+const HTX_FUND_RATE = (b: string) => `https://api.hbdm.com/swap-api/v1/swap_funding_rate?contract_code=${b}-USD`;
+const BLOFIN_FUND_RATE = (b: string) => `https://openapi.blofin.com/api/v1/market/funding-rate?instId=${b}-USDT`;
 
 const FETCH_TIMEOUT_MS = 12_000;
 
@@ -39,21 +39,21 @@ export interface FundingRateEntry {
   /** Funding interval in hours from Binance fundingInfo (1 | 4 | 8). Default 8. */
   fundingIntervalHours: number;
   // ── Exchange rates — NEVER capped, NEVER filtered, null = no data ──────────
-  binance:     number | null;
-  bybit:       number | null;
-  okx:         number | null;
-  bitget:      number | null;
-  kucoin:      number | null;
-  gateio:      number | null;
-  mexc:        number | null;
-  bingx:       number | null;
-  htx:         number | null;
-  bitmex:      number | null;
-  dydx:        number | null;
+  binance: number | null;
+  bybit: number | null;
+  okx: number | null;
+  bitget: number | null;
+  kucoin: number | null;
+  gateio: number | null;
+  mexc: number | null;
+  bingx: number | null;
+  htx: number | null;
+  bitmex: number | null;
+  dydx: number | null;
   hyperliquid: number | null;
-  phemex:      number | null;
-  blofin:      number | null;
-  delta:       number | null;
+  phemex: number | null;
+  blofin: number | null;
+  delta: number | null;
   // ─────────────────────────────────────────────────────────────────────────
   maxSpread: number;
   opportunity: 'hot' | 'mild' | 'low';
@@ -181,11 +181,11 @@ async function fetchBinance(): Promise<BinanceFetchResult> {
       const tk = tickerMap.get(item.symbol);
       data.set(base, {
         rate,
-        price:          parseFloat(tk?.lastPrice ?? item.markPrice ?? '0'),
+        price: parseFloat(tk?.lastPrice ?? item.markPrice ?? '0'),
         priceChange24h: parseFloat(tk?.priceChangePercent ?? '0'),
-        volume24h:      parseFloat(tk?.quoteVolume ?? '0'),
-        openInterest:   0,
-        nextFunding:    new Date(item.nextFundingTime).toISOString(),
+        volume24h: parseFloat(tk?.quoteVolume ?? '0'),
+        openInterest: 0,
+        nextFunding: new Date(item.nextFundingTime).toISOString(),
       });
     }
     return { data, intervalMap, ok: data.size > 0 };
@@ -305,11 +305,11 @@ async function fetchPhemex(): Promise<FetchResult<SimpleRateData>> {
     const fields: string[] = result?.fields ?? [];
     const rawTicks: unknown[] = result?.tick ?? result?.data ?? [];
 
-    const symIdx      = fields.indexOf('symbol');
-    const frErIdx     = fields.indexOf('fundingRateEr');    // PRIMARY: ×10^8
-    const frRrIdx     = fields.indexOf('fundingRateRr');    // FALLBACK: decimal
+    const symIdx = fields.indexOf('symbol');
+    const frErIdx = fields.indexOf('fundingRateEr');    // PRIMARY: ×10^8
+    const frRrIdx = fields.indexOf('fundingRateRr');    // FALLBACK: decimal
     const nextFundIdx = fields.indexOf('nextFundingTimeEp');
-    const isColumnar  = fields.length > 0 && Array.isArray(rawTicks[0]);
+    const isColumnar = fields.length > 0 && Array.isArray(rawTicks[0]);
 
     if (isColumnar) {
       for (const row of rawTicks as string[][]) {
@@ -440,13 +440,13 @@ async function fetchDydx(): Promise<FetchResult<DydxData>> {
       const oraclePrice = parseFloat(mkt.oraclePrice || '0');
       data.set(base, {
         rate,
-        price:          oraclePrice,
+        price: oraclePrice,
         priceChange24h: oraclePrice
           ? parseFloat(mkt.priceChange24H) / oraclePrice * 100
           : 0,
-        volume24h:    parseFloat(mkt.volume24H),
+        volume24h: parseFloat(mkt.volume24H),
         openInterest: parseFloat(mkt.openInterest) * oraclePrice,
-        nextFunding:  mkt.nextFundingAt ?? new Date(Date.now() + 3_600_000).toISOString(),
+        nextFunding: mkt.nextFundingAt ?? new Date(Date.now() + 3_600_000).toISOString(),
       });
     }
     return { data, ok: data.size > 0 };
@@ -713,13 +713,13 @@ export async function GET() {
 
   // Build the master base set from ALL batch results
   const allBases = new Set<string>();
-  for (const [b] of binance.data)     allBases.add(b);
-  for (const [b] of bybit.data)       allBases.add(b);
-  for (const [b] of gateio.data)      allBases.add(b);
-  for (const [b] of bitmex.data)      allBases.add(b);
-  for (const [b] of phemex.data)      allBases.add(b);
-  for (const [b] of delta.data)       allBases.add(b);
-  for (const [b] of dydx.data)        allBases.add(b);
+  for (const [b] of binance.data) allBases.add(b);
+  for (const [b] of bybit.data) allBases.add(b);
+  for (const [b] of gateio.data) allBases.add(b);
+  for (const [b] of bitmex.data) allBases.add(b);
+  for (const [b] of phemex.data) allBases.add(b);
+  for (const [b] of delta.data) allBases.add(b);
+  for (const [b] of dydx.data) allBases.add(b);
   for (const [b] of hyperliquid.data) allBases.add(b);
 
   // ── Phase 2: per-symbol exchanges use the full base set ───────────────────
@@ -734,29 +734,29 @@ export async function GET() {
   ]);
 
   // Also add any bases discovered by per-symbol exchanges
-  for (const [b] of okx.data)    allBases.add(b);
-  for (const [b] of bitget.data)  allBases.add(b);
-  for (const [b] of mexc.data)    allBases.add(b);
-  for (const [b] of kucoin.data)  allBases.add(b);
-  for (const [b] of bingx.data)   allBases.add(b);
-  for (const [b] of blofin.data)  allBases.add(b);
+  for (const [b] of okx.data) allBases.add(b);
+  for (const [b] of bitget.data) allBases.add(b);
+  for (const [b] of mexc.data) allBases.add(b);
+  for (const [b] of kucoin.data) allBases.add(b);
+  for (const [b] of bingx.data) allBases.add(b);
+  for (const [b] of blofin.data) allBases.add(b);
 
   const exchangeStatus: Record<string, 'ok' | 'error'> = {
-    binance:     binance.ok     ? 'ok' : 'error',
-    bybit:       bybit.ok       ? 'ok' : 'error',
-    okx:         okx.ok         ? 'ok' : 'error',
-    bitget:      bitget.ok      ? 'ok' : 'error',
-    kucoin:      kucoin.ok      ? 'ok' : 'error',
-    gateio:      gateio.ok      ? 'ok' : 'error',
-    mexc:        mexc.ok        ? 'ok' : 'error',
-    bingx:       bingx.ok       ? 'ok' : 'error',
-    htx:         htx.ok         ? 'ok' : 'error',
-    bitmex:      bitmex.ok      ? 'ok' : 'error',
-    dydx:        dydx.ok        ? 'ok' : 'error',
+    binance: binance.ok ? 'ok' : 'error',
+    bybit: bybit.ok ? 'ok' : 'error',
+    okx: okx.ok ? 'ok' : 'error',
+    bitget: bitget.ok ? 'ok' : 'error',
+    kucoin: kucoin.ok ? 'ok' : 'error',
+    gateio: gateio.ok ? 'ok' : 'error',
+    mexc: mexc.ok ? 'ok' : 'error',
+    bingx: bingx.ok ? 'ok' : 'error',
+    htx: htx.ok ? 'ok' : 'error',
+    bitmex: bitmex.ok ? 'ok' : 'error',
+    dydx: dydx.ok ? 'ok' : 'error',
     hyperliquid: hyperliquid.ok ? 'ok' : 'error',
-    phemex:      phemex.ok      ? 'ok' : 'error',
-    blofin:      blofin.ok      ? 'ok' : 'error',
-    delta:       delta.ok       ? 'ok' : 'error',
+    phemex: phemex.ok ? 'ok' : 'error',
+    blofin: blofin.ok ? 'ok' : 'error',
+    delta: delta.ok ? 'ok' : 'error',
   };
 
   // ── Assemble entries ──────────────────────────────────────────────────────
@@ -764,41 +764,41 @@ export async function GET() {
 
   for (const base of allBases) {
     const binD = binance.data.get(base);
-    const byD  = bybit.data.get(base);
-    const okD  = okx.data.get(base);
-    const dyD  = dydx.data.get(base);
-    const hlD  = hyperliquid.data.get(base);
-    const bgD  = bitget.data.get(base);
-    const gtD  = gateio.data.get(base);
-    const mxD  = mexc.data.get(base);
-    const kcD  = kucoin.data.get(base);
-    const bxD  = bingx.data.get(base);
-    const hxD  = htx.data.get(base);
-    const bmD  = bitmex.data.get(base);
-    const pxD  = phemex.data.get(base);
-    const bfD  = blofin.data.get(base);
-    const dlD  = delta.data.get(base);
+    const byD = bybit.data.get(base);
+    const okD = okx.data.get(base);
+    const dyD = dydx.data.get(base);
+    const hlD = hyperliquid.data.get(base);
+    const bgD = bitget.data.get(base);
+    const gtD = gateio.data.get(base);
+    const mxD = mexc.data.get(base);
+    const kcD = kucoin.data.get(base);
+    const bxD = bingx.data.get(base);
+    const hxD = htx.data.get(base);
+    const bmD = bitmex.data.get(base);
+    const pxD = phemex.data.get(base);
+    const bfD = blofin.data.get(base);
+    const dlD = delta.data.get(base);
 
     const binRate = binD?.rate ?? null;
-    const byRate  = byD?.rate  ?? null;
-    const okRate  = okD?.rate  ?? null;
-    const dyRate  = dyD?.rate  ?? null;
-    const hlRate  = hlD?.rate  ?? null;
-    const bgRate  = bgD?.rate  ?? null;
-    const gtRate  = gtD?.rate  ?? null;
-    const mxRate  = mxD?.rate  ?? null;
-    const kcRate  = kcD?.rate  ?? null;
-    const bxRate  = bxD?.rate  ?? null;
-    const hxRate  = hxD?.rate  ?? null;
-    const bmRate  = bmD?.rate  ?? null;
-    const pxRate  = pxD?.rate  ?? null;
-    const bfRate  = bfD?.rate  ?? null;
-    const dlRate  = dlD?.rate  ?? null;
+    const byRate = byD?.rate ?? null;
+    const okRate = okD?.rate ?? null;
+    const dyRate = dyD?.rate ?? null;
+    const hlRate = hlD?.rate ?? null;
+    const bgRate = bgD?.rate ?? null;
+    const gtRate = gtD?.rate ?? null;
+    const mxRate = mxD?.rate ?? null;
+    const kcRate = kcD?.rate ?? null;
+    const bxRate = bxD?.rate ?? null;
+    const hxRate = hxD?.rate ?? null;
+    const bmRate = bmD?.rate ?? null;
+    const pxRate = pxD?.rate ?? null;
+    const bfRate = bfD?.rate ?? null;
+    const dlRate = dlD?.rate ?? null;
 
     const validRates = [
       binRate, byRate, okRate, dyRate, hlRate,
-      bgRate,  gtRate, mxRate, kcRate, bxRate,
-      hxRate,  bmRate, pxRate, bfRate, dlRate,
+      bgRate, gtRate, mxRate, kcRate, bxRate,
+      hxRate, bmRate, pxRate, bfRate, dlRate,
     ].filter((r): r is number => r !== null);
 
     // Skip pairs with no data at all
@@ -809,10 +809,10 @@ export async function GET() {
       : 0;
 
     // Price / volume: Binance is primary, dYdX secondary
-    const price          = binD?.price          ?? dyD?.price          ?? 0;
-    const priceChange24h = binD?.priceChange24h  ?? dyD?.priceChange24h  ?? 0;
-    const volume24h      = binD?.volume24h       ?? dyD?.volume24h       ?? 0;
-    const openInterest   = binD?.openInterest    ?? dyD?.openInterest    ?? 0;
+    const price = binD?.price ?? dyD?.price ?? 0;
+    const priceChange24h = binD?.priceChange24h ?? dyD?.priceChange24h ?? 0;
+    const volume24h = binD?.volume24h ?? dyD?.volume24h ?? 0;
+    const openInterest = binD?.openInterest ?? dyD?.openInterest ?? 0;
 
     // Funding interval from Binance fundingInfo; default 8h
     const fundingIntervalHours = binance.intervalMap.get(base) ?? 8;
@@ -820,9 +820,9 @@ export async function GET() {
     // Earliest next funding across all exchanges with data
     const fundingTimes = [
       binD?.nextFunding, byD?.nextFunding, okD?.nextFunding, dyD?.nextFunding,
-      hlD?.nextFunding,  bgD?.nextFunding, gtD?.nextFunding, mxD?.nextFunding,
-      kcD?.nextFunding,  bxD?.nextFunding, hxD?.nextFunding, bmD?.nextFunding,
-      pxD?.nextFunding,  bfD?.nextFunding, dlD?.nextFunding,
+      hlD?.nextFunding, bgD?.nextFunding, gtD?.nextFunding, mxD?.nextFunding,
+      kcD?.nextFunding, bxD?.nextFunding, hxD?.nextFunding, bmD?.nextFunding,
+      pxD?.nextFunding, bfD?.nextFunding, dlD?.nextFunding,
     ].filter(Boolean) as string[];
     const nextFunding = fundingTimes.length > 0
       ? fundingTimes.reduce((a, b) => (new Date(a) < new Date(b) ? a : b))
@@ -830,39 +830,39 @@ export async function GET() {
 
     const exchangeErrors: string[] = [];
     if (binRate === null && binance.ok) exchangeErrors.push('binance');
-    if (byRate  === null && bybit.ok)   exchangeErrors.push('bybit');
-    if (okRate  === null && okx.ok)     exchangeErrors.push('okx');
-    if (dyRate  === null && dydx.ok)    exchangeErrors.push('dydx');
-    if (hlRate  === null && hyperliquid.ok) exchangeErrors.push('hyperliquid');
+    if (byRate === null && bybit.ok) exchangeErrors.push('bybit');
+    if (okRate === null && okx.ok) exchangeErrors.push('okx');
+    if (dyRate === null && dydx.ok) exchangeErrors.push('dydx');
+    if (hlRate === null && hyperliquid.ok) exchangeErrors.push('hyperliquid');
 
     entries.push({
-      id:            `${base}-USDT`,
-      symbol:        `${base}/USDT`,
-      baseAsset:     base,
-      logoColor:     logoColorFor(base),
-      logoText:      base.slice(0, 4),
+      id: `${base}-USDT`,
+      symbol: `${base}/USDT`,
+      baseAsset: base,
+      logoColor: logoColorFor(base),
+      logoText: base.slice(0, 4),
       price,
       priceChange24h,
       volume24h,
       openInterest,
       fundingIntervalHours,
-      binance:     binRate,
-      bybit:       byRate,
-      okx:         okRate,
-      bitget:      bgRate,
-      kucoin:      kcRate,
-      gateio:      gtRate,
-      mexc:        mxRate,
-      bingx:       bxRate,
-      htx:         hxRate,
-      bitmex:      bmRate,
-      dydx:        dyRate,
+      binance: binRate,
+      bybit: byRate,
+      okx: okRate,
+      bitget: bgRate,
+      kucoin: kcRate,
+      gateio: gtRate,
+      mexc: mxRate,
+      bingx: bxRate,
+      htx: hxRate,
+      bitmex: bmRate,
+      dydx: dyRate,
       hyperliquid: hlRate,
-      phemex:      pxRate,
-      blofin:      bfRate,
-      delta:       dlRate,
+      phemex: pxRate,
+      blofin: bfRate,
+      delta: dlRate,
       maxSpread,
-      opportunity:  opportunityLevel(maxSpread),
+      opportunity: opportunityLevel(maxSpread),
       nextFunding,
       exchangeErrors,
     });
