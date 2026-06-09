@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 // ─── API endpoints ────────────────────────────────────────────────────────────
 // Batch exchanges (return all pairs in one call)
@@ -873,6 +874,10 @@ export async function GET() {
 
   return NextResponse.json(
     { data: entries, updatedAt: new Date().toISOString(), exchangeStatus } satisfies ApiResponse,
-    { headers: { 'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=60' } },
+    { headers: {
+      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=60',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET',
+    } },
   );
 }
