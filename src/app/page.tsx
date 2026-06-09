@@ -40,21 +40,35 @@ export default function HomePage() {
   const fetchData = useCallback(async () => {
     setIsRefreshing(true);
     setError(null);
+    const ctrl = new AbortController();
+    // 55 s client-side timeout — gives the server enough time while preventing
+    // an infinite spinner if the connection hangs (Vercel Hobby = 10 s limit,
+    // Pro = 60 s; we guard both sides here).
+    const timer = setTimeout(() => ctrl.abort(), 55_000);
     try {
-      const res = await fetch('/api/funding-rates', { cache: 'no-store' });
+      const res = await fetch('/api/funding-rates', {
+        cache: 'no-store',
+        signal: ctrl.signal,
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json: ApiResponse = await res.json();
       setApiData(json);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to fetch data');
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        setError('Request timed out — the server took too long to respond. Try refreshing.');
+      } else {
+        setError(e instanceof Error ? e.message : 'Failed to fetch data');
+      }
     } finally {
+      clearTimeout(timer);
       setIsRefreshing(false);
       setIsInitial(false);
     }
   }, []);
 
-  useEffect(() => { fetchData(); }, [fetchData]);
+  // Single effect: fetch immediately on mount, then every 30 s
   useEffect(() => {
+    fetchData();
     const id = setInterval(fetchData, 30_000);
     return () => clearInterval(id);
   }, [fetchData]);

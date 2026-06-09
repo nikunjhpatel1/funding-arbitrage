@@ -24,7 +24,9 @@ const BINGX_FUND_RATE = (b: string) => `https://open-api.bingx.com/openApi/swap/
 const HTX_FUND_RATE = (b: string) => `https://api.hbdm.com/swap-api/v1/swap_funding_rate?contract_code=${b}-USD`;
 const BLOFIN_FUND_RATE = (b: string) => `https://openapi.blofin.com/api/v1/market/funding-rate?instId=${b}-USDT`;
 
-const FETCH_TIMEOUT_MS = 12_000;
+// Per-exchange HTTP timeout: longer in dev (Windows DNS serialization overhead),
+// tight in production to stay within Vercel Hobby's 10 s serverless limit.
+const FETCH_TIMEOUT_MS = process.env.NODE_ENV === 'development' ? 12_000 : 4_000;
 
 // ─── Exported types ───────────────────────────────────────────────────────────
 export interface FundingRateEntry {
@@ -697,11 +699,36 @@ async function fetchBloFin(bases: Iterable<string>): Promise<FetchResult<SimpleR
   return { data, ok: anySuccess || data.size > 0 };
 }
 
+// ─── Top coins for per-symbol Phase-2 fetches ─────────────────────────────────
+// We only query per-symbol exchanges for well-known coins to avoid making
+// hundreds of requests (which would time out on Vercel Hobby's 10 s limit).
+const TOP_BASES = new Set([
+  'BTC','ETH','SOL','BNB','XRP','DOGE','ADA','AVAX','LINK','TRX',
+  'OP','ARB','INJ','WLD','SUI','APT','NEAR','LTC','UNI','ATOM',
+  'TON','PEPE','DOT','FIL','ENA','TIA','SEI','JUP','ONDO','RUNE',
+  'ORDI','BLUR','GMX','DYDX','PENDLE','AAVE','MANTA','ALT','JTO',
+  'PYTH','WIF','BONK','FLOKI','BRETT','POPCAT','MEW','GOAT','PNUT',
+  'ACT','VIRTUAL','AI16Z','FARTCOIN','IMX','SAND','MANA','GRT',
+  'LDO','FTM','MATIC','OMG',
+]);
+
+/** Race a promise against a timeout; resolves with null if time runs out. */
+function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | null> {
+  return Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
+}
+
 // ─── Route Handler ────────────────────────────────────────────────────────────
+// In production we must finish within Vercel Hobby's 10 s function limit.
+// In development there's no such constraint, so we use generous timeouts.
+const IS_DEV = process.env.NODE_ENV === 'development';
+const TOTAL_BUDGET_MS = IS_DEV ? 50_000 : 8_000;  // 8 s prod, 50 s dev
+const PHASE1_MS       = IS_DEV ? 45_000 : 7_000;
+
 export async function GET() {
-  // ── Phase 1: all batch exchanges fire concurrently ────────────────────────
-  // This also discovers ALL available bases for Phase 2 per-symbol fetches.
-  const [binance, bybit, gateio, bitmex, phemex, delta, dydx, hyperliquid] = await Promise.all([
+  const START = Date.now();
+
+  // ── Phase 1: all batch exchanges fire concurrently (7 s budget) ───────────
+  const phase1 = Promise.all([
     fetchBinance(),
     fetchBybit(),
     fetchGateio(),
@@ -712,7 +739,20 @@ export async function GET() {
     fetchHyperliquid(),
   ]);
 
-  // Build the master base set from ALL batch results
+  const phase1Results = await withDeadline(phase1, PHASE1_MS);
+  const [binance, bybit, gateio, bitmex, phemex, delta, dydx, hyperliquid] =
+    phase1Results ?? [
+      { data: new Map(), intervalMap: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+    ];
+
+  // Build the master base set from all batch results
   const allBases = new Set<string>();
   for (const [b] of binance.data) allBases.add(b);
   for (const [b] of bybit.data) allBases.add(b);
@@ -723,16 +763,33 @@ export async function GET() {
   for (const [b] of dydx.data) allBases.add(b);
   for (const [b] of hyperliquid.data) allBases.add(b);
 
-  // ── Phase 2: per-symbol exchanges use the full base set ───────────────────
-  const [okx, bitget, mexc, kucoin, bingx, htx, blofin] = await Promise.all([
-    fetchOKX(allBases),
-    fetchBitget(allBases),
-    fetchMEXC(allBases),
-    fetchKuCoin(allBases),
-    fetchBingX(allBases),
-    fetchHTX(allBases),
-    fetchBloFin(allBases),
+  // ── Phase 2: per-symbol exchanges, top coins only, within remaining budget ──
+  // We limit to TOP_BASES to avoid 400+ outbound requests.
+  const phase2Bases = new Set([...allBases].filter((b) => TOP_BASES.has(b)));
+  // Give Phase 2 whatever time is left up to 8 s total, minus a 200 ms margin.
+  const remainingMs = Math.max(0, TOTAL_BUDGET_MS - (Date.now() - START) - 200);
+
+  const phase2 = Promise.all([
+    fetchOKX(phase2Bases),
+    fetchBitget(phase2Bases),
+    fetchMEXC(phase2Bases),
+    fetchKuCoin(phase2Bases),
+    fetchBingX(phase2Bases),
+    fetchHTX(phase2Bases),
+    fetchBloFin(phase2Bases),
   ]);
+
+  const phase2Results = await withDeadline(phase2, remainingMs);
+  const [okx, bitget, mexc, kucoin, bingx, htx, blofin] =
+    phase2Results ?? [
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+      { data: new Map(), ok: false },
+    ];
 
   // Also add any bases discovered by per-symbol exchanges
   for (const [b] of okx.data) allBases.add(b);
