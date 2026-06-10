@@ -477,6 +477,73 @@ body {
 .filter-tab:not(.active):hover { color: var(--text-primary); }
 
 /* ─── Funding Rate Table ──────────────────────────────────────────────────── */
+/* ─── Funding Rate Table scroll container ─────────────────────────────────── */
+.table-scroll-outer {
+  position: relative;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-card);
+  background: var(--bg-card);
+}
+
+/* Left / right scroll-shadow overlays */
+.table-scroll-outer::before,
+.table-scroll-outer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 48px;
+  z-index: 10;
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+  border-radius: var(--radius-lg);
+}
+.table-scroll-outer::before {
+  left: 0;
+  background: linear-gradient(to right, rgba(13,17,32,0.85), transparent);
+  opacity: 0;   /* hidden when at left edge */
+  border-radius: var(--radius-lg) 0 0 var(--radius-lg);
+}
+.table-scroll-outer::after {
+  right: 0;
+  background: linear-gradient(to left, rgba(13,17,32,0.85), transparent);
+  opacity: 1;   /* visible by default — table overflows right */
+  border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+}
+.table-scroll-outer.shadow-left::before  { opacity: 1; }
+.table-scroll-outer.shadow-right-off::after { opacity: 0; }
+
+.table-scroll-inner {
+  overflow-x: auto;
+  overflow-y: visible;
+  /* Smooth inertia scrolling on iOS / trackpad */
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  border-radius: var(--radius-lg);
+  /* Custom thin scrollbar for webkit */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255,255,255,0.18) transparent;
+}
+.table-scroll-inner::-webkit-scrollbar {
+  height: 5px;
+}
+.table-scroll-inner::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.03);
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+}
+.table-scroll-inner::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.18);
+  border-radius: 3px;
+  transition: background 0.2s;
+}
+.table-scroll-inner::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.35);
+}
+
+/* Grab-cursor for mouse drag-scroll */
+.table-scroll-inner.dragging { cursor: grabbing; user-select: none; }
+
 .table-wrapper {
   background: var(--bg-card);
   border: 1px solid var(--border);
@@ -486,7 +553,8 @@ body {
 }
 
 .funding-table {
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   border-collapse: collapse;
 }
 
@@ -534,25 +602,27 @@ body {
   white-space: nowrap;
 }
 
-/* Symbol cell */
-.symbol-cell { display: flex; align-items: center; gap: 10px; }
+/* Symbol cell — compact */
+.symbol-cell { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .token-logo {
-  width: 32px; height: 32px;
+  width: 26px; height: 26px;
   border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
-  font-size: 0.7rem;
+  font-size: 0.6rem;
   font-weight: 700;
   flex-shrink: 0;
   border: 1px solid rgba(255,255,255,0.1);
 }
 .symbol-name {
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
+  white-space: nowrap;
 }
 .symbol-sub {
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   color: var(--text-muted);
   margin-top: 1px;
+  white-space: nowrap;
 }
 
 /* Rate cells */
@@ -648,5 +718,5 @@ body {
   .main-content { padding: 0 1rem 3rem; }
   .hero { padding: 2rem 0 1.5rem; }
   .hero-title { font-size: 1.75rem; }
-  .table-overflow { overflow-x: auto; }
+  /* Table scrolls horizontally via .table-scroll-inner on all screen sizes */
 }

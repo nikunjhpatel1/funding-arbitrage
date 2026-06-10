@@ -184,6 +184,64 @@ export default function FundingRateTable({
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  // ── Horizontal scroll shadows + drag-to-scroll ────────────────────────────
+  const scrollOuterRef = useRef<HTMLDivElement>(null);
+  const scrollInnerRef = useRef<HTMLDivElement>(null);
+  const [shadowLeft,  setShadowLeft]  = useState(false);
+  const [shadowRight, setShadowRight] = useState(true);
+  // drag state stored in refs to avoid re-render on every mousemove
+  const isDragging   = useRef(false);
+  const dragStartX   = useRef(0);
+  const dragScrollX  = useRef(0);
+
+  const updateShadows = useCallback(() => {
+    const el = scrollInnerRef.current;
+    if (!el) return;
+    setShadowLeft(el.scrollLeft > 8);
+    setShadowRight(el.scrollLeft < el.scrollWidth - el.clientWidth - 8);
+  }, []);
+
+  useEffect(() => {
+    const el = scrollInnerRef.current;
+    if (!el) return;
+    updateShadows();
+    el.addEventListener('scroll', updateShadows, { passive: true });
+    const ro = new ResizeObserver(updateShadows);
+    ro.observe(el);
+    return () => { el.removeEventListener('scroll', updateShadows); ro.disconnect(); };
+  }, [updateShadows]);
+
+  const onMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    // Only drag with primary button; ignore clicks on interactive elements
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('button, input, label, a, th')) return;
+    isDragging.current  = true;
+    dragStartX.current  = e.clientX;
+    dragScrollX.current = scrollInnerRef.current?.scrollLeft ?? 0;
+    scrollInnerRef.current?.classList.add('dragging');
+    e.preventDefault();
+  }, []);
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDragging.current || !scrollInnerRef.current) return;
+      const dx = e.clientX - dragStartX.current;
+      scrollInnerRef.current.scrollLeft = dragScrollX.current - dx;
+    };
+    const onMouseUp = () => {
+      if (!isDragging.current) return;
+      isDragging.current = false;
+      scrollInnerRef.current?.classList.remove('dragging');
+    };
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup',   onMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup',   onMouseUp);
+    };
+  }, []);
+
   // ── Countdown / flash ──────────────────────────────────────────────────────
   const [countdown, setCountdown] = useState(AUTO_REFRESH_SEC);
   const [flashRows,  setFlashRows] = useState(false);
@@ -579,12 +637,25 @@ export default function FundingRateTable({
       </div>
 
       {/* ════════════════════════════════ TABLE ══════════════════════════════════════ */}
-      <div className="table-overflow">
-        <div className={`table-wrapper ${flashRows ? 'flash' : ''}`}>
-          <table className="funding-table" aria-label="Crypto funding rates table">
+      <div
+        ref={scrollOuterRef}
+        className={`table-scroll-outer${shadowLeft ? ' shadow-left' : ''}${!shadowRight ? ' shadow-right-off' : ''}`}
+      >
+        <div
+          ref={scrollInnerRef}
+          className="table-scroll-inner"
+          onMouseDown={onMouseDown}
+          style={{ cursor: 'grab' }}
+        >
+          <div className={`table-wrapper ${flashRows ? 'flash' : ''}`} style={{ border: 'none', boxShadow: 'none', borderRadius: 0 }}>
+            <table className="funding-table" aria-label="Crypto funding rates table">
             <thead>
               <tr>
-                <th onClick={() => handleSort('symbol')} className={sortKey === 'symbol' ? 'sorted' : ''}>
+                <th
+                  onClick={() => handleSort('symbol')}
+                  className={sortKey === 'symbol' ? 'sorted' : ''}
+                  style={{ paddingRight: 8 }}
+                >
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     Market <SortIcon k="symbol" />
                   </span>
@@ -653,7 +724,7 @@ export default function FundingRateTable({
               ) : (
                 visibleRows.map((row, i) => (
                   <tr key={row.id} style={{ animationDelay: `${Math.min(i * 20, 400)}ms` }}>
-                    <td>
+                    <td style={{ paddingRight: 8 }}>
                       <div className="symbol-cell">
                         <div
                           className="token-logo"
@@ -766,6 +837,7 @@ export default function FundingRateTable({
               )}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
 
