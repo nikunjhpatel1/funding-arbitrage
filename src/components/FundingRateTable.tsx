@@ -709,7 +709,16 @@ export default function FundingRateTable({
           }}
           className="table-overflow"
           onMouseDown={onMouseDown}
-          style={{ cursor: 'grab', height: '600px', overflow: 'auto', position: 'relative' }}
+          style={{
+            width: '100%',
+            overflowX: 'auto',
+            overflowY: 'auto',
+            scrollBehavior: 'smooth',
+            WebkitOverflowScrolling: 'touch',
+            cursor: 'grab',
+            height: '600px',
+            position: 'relative'
+          }}
         >
           <div className={`table-wrapper ${flashRows ? 'flash' : ''}`} style={{ border: 'none', boxShadow: 'none', borderRadius: 0 }}>
             <table className="funding-table" aria-label="Crypto funding rates table">
@@ -962,7 +971,7 @@ export default function FundingRateTable({
           alignItems: 'center',
           gap: '10px',
         }}>
-          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', userSelect: 'none' }}>
             ← Scroll →
           </span>
           <input
@@ -1220,20 +1229,23 @@ export default function FundingRateTable({
         .exchange-down { opacity: 0.55; }
 
         .funding-table {
-          width: 100%;
+          width: max-content;
+          min-width: 100%;
           border-collapse: collapse;
         }
         .funding-table th:first-child,
         .funding-table td:first-child {
-          width: 160px;
-          min-width: 160px;
-          max-width: 160px;
+          width: 180px;
+          min-width: 180px;
+          max-width: 180px;
+          padding-right: 8px;
         }
         .funding-table th:nth-child(2),
         .funding-table td:nth-child(2) {
-          width: 110px;
-          min-width: 110px;
-          max-width: 110px;
+          width: 120px;
+          min-width: 120px;
+          max-width: 120px;
+          padding-left: 8px;
         }
         .funding-table th:nth-child(3),
         .funding-table td:nth-child(3) {
@@ -1250,18 +1262,26 @@ export default function FundingRateTable({
           display: flex;
           align-items: center;
           gap: 8px;
-          overflow: hidden;
+          width: 100%;
         }
         .symbol-name {
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
-          max-width: 110px;
+          max-width: 120px;
+          font-size: 0.875rem;
+          font-weight: 600;
+        }
+        .symbol-sub {
+          font-size: 0.7rem;
+          color: var(--text-muted);
+          white-space: nowrap;
         }
         .token-logo {
           width: 32px;
           height: 32px;
           min-width: 32px;
+          max-width: 32px;
           border-radius: 50%;
           display: flex;
           align-items: center;
@@ -1281,18 +1301,18 @@ export default function FundingRateTable({
           -webkit-overflow-scrolling: touch;
         }
         .table-overflow::-webkit-scrollbar {
-          height: 8px;
+          height: 6px;
         }
         .table-overflow::-webkit-scrollbar-track {
-          background: rgba(255,255,255,0.05);
-          border-radius: 4px;
+          background: rgba(255,255,255,0.04);
+          border-radius: 3px;
         }
         .table-overflow::-webkit-scrollbar-thumb {
-          background: rgba(99,130,246,0.5);
-          border-radius: 4px;
+          background: rgba(59,130,246,0.4);
+          border-radius: 3px;
         }
         .table-overflow::-webkit-scrollbar-thumb:hover {
-          background: rgba(99,130,246,0.8);
+          background: rgba(59,130,246,0.7);
         }
         .funding-table thead th {
           position: sticky;
