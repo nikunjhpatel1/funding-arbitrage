@@ -56,6 +56,11 @@ export default function HomePage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isInitial, setIsInitial] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -88,8 +93,12 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (!mounted) return;
+    const timer = setTimeout(() => {
+      fetchData();
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [mounted, fetchData]);
 
   useEffect(() => {
     const id = setInterval(fetchData, 60000);
@@ -154,7 +163,7 @@ export default function HomePage() {
         </div>
       )}
 
-      {isInitial && !error && (
+      {isInitial && !error && !apiData && (
         <div style={{
           textAlign: 'center', padding: '4rem 0',
           color: 'var(--text-muted)', fontSize: '0.9rem',
