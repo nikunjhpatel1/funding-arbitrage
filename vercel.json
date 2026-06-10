@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "src/app/api/funding-rates/route.ts": {
+      "maxDuration": 60
+    }
+  }
+}

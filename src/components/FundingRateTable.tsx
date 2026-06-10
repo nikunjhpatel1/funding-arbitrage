@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import {
   ChevronUp,
   ChevronDown,
@@ -175,7 +176,7 @@ export default function FundingRateTable({
   const [oppFilter,  setOppFilter] = useState<OppFilter>('all');
   const [intervalFilter, setIntervalFilter] = useState<IntervalFilter>('all');
   const [search,     setSearch]    = useState('');
-  const [pairLimit,  setPairLimit] = useState<number | null>(null);
+  const [pairLimit,  setPairLimit] = useState<number | null>(50);
   const [minSpread,  setMinSpread] = useState<number>(0);
   const [minVolume,  setMinVolume] = useState<number>(0);
 
@@ -183,6 +184,7 @@ export default function FundingRateTable({
   const [visibleExchanges, setVisibleExchanges] = useState<Set<string>>(new Set(DEFAULT_VISIBLE));
   const [dropdownOpen,     setDropdownOpen]     = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const tableContainerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
@@ -362,6 +364,20 @@ export default function FundingRateTable({
     if (pairLimit !== null) rows = rows.slice(0, pairLimit);
     return rows;
   }, [enrichedData, oppFilter, intervalFilter, minSpread, minVolume, search, sortKey, sortDir, pairLimit]);
+
+  const rowVirtualizer = useVirtualizer({
+    count: visibleRows.length,
+    getScrollElement: () => tableContainerRef.current,
+    estimateSize: () => 56,
+    overscan: 10,
+  });
+
+  const virtualRows = rowVirtualizer.getVirtualItems();
+  const totalSize = rowVirtualizer.getTotalSize();
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0;
+  const paddingBottom = virtualRows.length > 0
+    ? totalSize - virtualRows[virtualRows.length - 1].end
+    : 0;
 
   const totalAfterFilters = useMemo(() => {
     let rows = [...enrichedData];
@@ -685,10 +701,15 @@ export default function FundingRateTable({
         className={`table-scroll-outer${shadowLeft ? ' shadow-left' : ''}${!shadowRight ? ' shadow-right-off' : ''}`}
       >
         <div
-          ref={scrollInnerRef}
+          ref={(node) => {
+            // @ts-ignore
+            scrollInnerRef.current = node;
+            // @ts-ignore
+            tableContainerRef.current = node;
+          }}
           className="table-overflow"
           onMouseDown={onMouseDown}
-          style={{ cursor: 'grab' }}
+          style={{ cursor: 'grab', height: '600px', overflow: 'auto', position: 'relative' }}
         >
           <div className={`table-wrapper ${flashRows ? 'flash' : ''}`} style={{ border: 'none', boxShadow: 'none', borderRadius: 0 }}>
             <table className="funding-table" aria-label="Crypto funding rates table">
@@ -756,128 +777,178 @@ export default function FundingRateTable({
             <tbody>
               {visibleRows.length === 0 ? (
                 <tr>
-                  <td colSpan={totalCols} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                    <div style={{ marginBottom: 8 }}><SlidersHorizontal size={20} style={{ opacity: 0.3 }} /></div>
+                  <td colSpan={totalCols} style={{ 
+                    textAlign: 'center', 
+                    padding: '3rem', 
+                    color: 'var(--text-muted)' 
+                  }}>
+                    <div style={{ marginBottom: 8 }}>
+                      <SlidersHorizontal size={20} style={{ opacity: 0.3 }} />
+                    </div>
                     No pairs match the current filters.{' '}
                     <button
-                      style={{ background: 'none', border: 'none', color: 'var(--accent-blue)', cursor: 'pointer', textDecoration: 'underline', fontSize: 'inherit' }}
-                      onClick={() => { setPairLimit(null); setMinSpread(0); setMinVolume(0); setOppFilter('all'); setIntervalFilter('all'); setSearch(''); }}
+                      style={{ 
+                        background: 'none', border: 'none', 
+                        color: 'var(--accent-blue)', cursor: 'pointer', 
+                        textDecoration: 'underline', fontSize: 'inherit' 
+                      }}
+                      onClick={() => { 
+                        setPairLimit(null); setMinSpread(0); 
+                        setMinVolume(0); setOppFilter('all'); setIntervalFilter('all');
+                        setSearch(''); 
+                      }}
                     >Reset filters</button>
                   </td>
                 </tr>
               ) : (
-                visibleRows.map((row, i) => (
-                  <tr key={row.id} style={{ animationDelay: `${Math.min(i * 20, 400)}ms` }}>
-                    <td style={{ paddingRight: 4 }}>
-                      <div className="symbol-cell">
-                        <div
-                          className="token-logo"
-                          style={{
-                            background:  row.logoColor + '22',
-                            borderColor: row.logoColor + '44',
-                            color:       row.logoColor,
-                          }}
-                        >{row.logoText.slice(0, 4)}</div>
-                        <div>
-                          <div className="symbol-name">{row.symbol}</div>
-                          <div className="symbol-sub">Perpetual</div>
-                        </div>
-                      </div>
-                    </td>
-
-                    <td className="right" style={{ paddingLeft: 4 }}>
-                      <div className="mono" style={{ fontSize: '0.875rem', fontWeight: 600 }}>
-                        {fmtPrice(row.price)}
-                      </div>
-                      <div style={{
-                        fontSize: '0.72rem', marginTop: 1,
-                        color: row.priceChange24h >= 0 ? 'var(--positive)' : 'var(--negative)',
-                      }}>
-                        {row.priceChange24h >= 0 ? '+' : ''}{row.priceChange24h.toFixed(2)}%
-                      </div>
-                    </td>
-
-                    <td className="right">
-                      <div
-                        style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace' }}
-                        className={
-                          row.computedSpread >= 0.005 ? 'rate-positive'
-                          : row.computedSpread >= 0.001 ? ''
-                          : 'rate-neutral'
-                        }
+                <>
+                  {paddingTop > 0 && (
+                    <tr>
+                      <td 
+                        colSpan={totalCols} 
+                        style={{ height: `${paddingTop}px`, padding: 0, border: 'none' }} 
+                      />
+                    </tr>
+                  )}
+                  {virtualRows.map((virtualRow) => {
+                    const row = visibleRows[virtualRow.index];
+                    return (
+                      <tr 
+                        key={row.id}
+                        data-index={virtualRow.index}
+                        ref={rowVirtualizer.measureElement}
                       >
-                        {(row.computedSpread * 100).toFixed(4)}%
-                      </div>
-                      <div className="spread-bar-bg">
-                        <div
-                          className="spread-bar-fill"
-                          style={{
-                            /* 1% spread = full bar; scaled so 0.5% ≈ 50% */
-                            width: `${Math.min(100, row.computedSpread * 10000)}%`,
-                            background:
-                              row.computedSpread >= 0.005 ? 'var(--positive)'
-                              : row.computedSpread >= 0.001 ? 'var(--warning)'
-                              : 'var(--text-muted)',
-                          }}
-                        />
-                      </div>
-                    </td>
-
-                    {activeExchanges.map((ex) => {
-                      const rate = row[ex.key] as number | null;
-                      // Show interval badge only on the Binance column
-                      const isBinance = ex.key === 'binance';
-                      const intervalHours = isBinance ? row.fundingIntervalHours : undefined;
-                      const tooltipText = rate !== null
-                        ? `Annualized: ${annualizedRate(rate, row.fundingIntervalHours)}`
-                        : undefined;
-                      return (
-                        <td
-                          key={ex.key as string}
-                          className="right rate-cell"
-                          title={tooltipText}
-                        >
-                          {fmtRate(rate, intervalHours)}
+                        <td style={{ paddingRight: 4 }}>
+                          <div className="symbol-cell">
+                            <div
+                              className="token-logo"
+                              style={{
+                                background: row.logoColor + '22',
+                                borderColor: row.logoColor + '44',
+                                color: row.logoColor,
+                              }}
+                            >{row.logoText.slice(0, 4)}</div>
+                            <div>
+                              <div className="symbol-name">{row.symbol}</div>
+                              <div className="symbol-sub">Perpetual</div>
+                            </div>
+                          </div>
                         </td>
-                      );
-                    })}
 
-                    {/* ── Interval column ─────────────────────────────────────────── */}
-                    <td className="right">
-                      <div
-                        className="interval-cell"
-                        title={`Funds every ${row.fundingIntervalHours}h · Annualized rate (Binance): ${row.binance !== null ? annualizedRate(row.binance, row.fundingIntervalHours) : 'N/A'}`}
-                      >
-                        <span className={`interval-pill ivl-${row.fundingIntervalHours}h`}>
-                          {row.fundingIntervalHours}h
-                        </span>
-                      </div>
-                    </td>
+                        <td className="right" style={{ paddingLeft: 4 }}>
+                          <div className="mono" style={{ 
+                            fontSize: '0.875rem', fontWeight: 600 
+                          }}>
+                            {fmtPrice(row.price)}
+                          </div>
+                          <div style={{
+                            fontSize: '0.72rem', marginTop: 1,
+                            color: row.priceChange24h >= 0 
+                              ? 'var(--positive)' : 'var(--negative)',
+                          }}>
+                            {row.priceChange24h >= 0 ? '+' : ''}
+                            {row.priceChange24h.toFixed(2)}%
+                          </div>
+                        </td>
 
-                    <td className="right mono" style={{ fontSize: '0.83rem', color: 'var(--text-secondary)' }}>
-                      {fmtLarge(row.volume24h)}
-                    </td>
+                        <td className="right">
+                          <div
+                            style={{ fontWeight: 700, fontFamily: 'JetBrains Mono, monospace' }}
+                            className={
+                              row.computedSpread >= 0.005 ? 'rate-positive'
+                              : row.computedSpread >= 0.001 ? ''
+                              : 'rate-neutral'
+                            }
+                          >
+                            {(row.computedSpread * 100).toFixed(4)}%
+                          </div>
+                          <div className="spread-bar-bg">
+                            <div
+                              className="spread-bar-fill"
+                              style={{
+                                width: `${Math.min(100, row.computedSpread * 10000)}%`,
+                                background:
+                                  row.computedSpread >= 0.005 ? 'var(--positive)'
+                                  : row.computedSpread >= 0.001 ? 'var(--warning)'
+                                  : 'var(--text-muted)',
+                              }}
+                            />
+                          </div>
+                        </td>
 
-                    <td className="right">
-                      <span className="mono" style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                        {fmtNextFunding(row.nextFunding)}
-                      </span>
-                    </td>
+                        {activeExchanges.map((ex) => {
+                          const rate = row[ex.key] as number | null;
+                          const isBinance = ex.key === 'binance';
+                          const intervalHours = isBinance 
+                            ? row.fundingIntervalHours : undefined;
+                          const tooltipText = rate !== null
+                            ? `Annualized: ${annualizedRate(rate, row.fundingIntervalHours)}`
+                            : undefined;
+                          return (
+                            <td
+                              key={ex.key as string}
+                              className="right rate-cell"
+                              title={tooltipText}
+                            >
+                              {fmtRate(rate, intervalHours)}
+                            </td>
+                          );
+                        })}
 
-                    <td className="right"><OppBadge opp={row.computedOpportunity} /></td>
+                        <td className="right">
+                          <div
+                            className="interval-cell"
+                            title={`Funds every ${row.fundingIntervalHours}h`}
+                          >
+                            <span className={`interval-pill ivl-${row.fundingIntervalHours}h`}>
+                              {row.fundingIntervalHours}h
+                            </span>
+                          </div>
+                        </td>
 
-                    <td className="right">
-                      <button
-                        className="action-btn"
-                        aria-label={`Trade ${row.symbol}`}
-                        id={`trade-${row.symbol.replace('/', '-')}`}
-                      >
-                        <ExternalLink size={11} style={{ display: 'inline', marginRight: 3 }} />
-                        Trade
-                      </button>
-                    </td>
-                  </tr>
-                ))
+                        <td className="right mono" style={{ 
+                          fontSize: '0.83rem', 
+                          color: 'var(--text-secondary)' 
+                        }}>
+                          {fmtLarge(row.volume24h)}
+                        </td>
+
+                        <td className="right">
+                          <span className="mono" style={{ 
+                            fontSize: '0.8rem', 
+                            color: 'var(--text-secondary)' 
+                          }}>
+                            {fmtNextFunding(row.nextFunding)}
+                          </span>
+                        </td>
+
+                        <td className="right">
+                          <OppBadge opp={row.computedOpportunity} />
+                        </td>
+
+                        <td className="right">
+                          <button
+                            className="action-btn"
+                            aria-label={`Trade ${row.symbol}`}
+                          >
+                            <ExternalLink size={11} style={{ 
+                              display: 'inline', marginRight: 3 
+                            }} />
+                            Trade
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {paddingBottom > 0 && (
+                    <tr>
+                      <td 
+                        colSpan={totalCols} 
+                        style={{ height: `${paddingBottom}px`, padding: 0, border: 'none' }} 
+                      />
+                    </tr>
+                  )}
+                </>
               )}
             </tbody>
           </table>
