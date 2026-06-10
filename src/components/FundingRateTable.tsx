@@ -45,6 +45,13 @@ const MIN_VOLUME_OPTIONS: { label: string; value: number }[] = [
   { label: '≥ $100M', value: 100_000_000},
 ];
 
+const INTERVAL_OPTIONS: { label: string; value: IntervalFilter }[] = [
+  { label: 'All',  value: 'all' },
+  { label: '1h',   value: '1'   },
+  { label: '4h',   value: '4'   },
+  { label: '8h',   value: '8'   },
+];
+
 /* ─── Exchange registry ──────────────────────────────────────────────────── */
 // Ordered by global popularity / trading volume
 const ALL_EXCHANGES: { key: keyof FundingRateEntry; label: string; group: 'top10' | 'more' }[] = [
@@ -125,6 +132,7 @@ type SortKey =
 
 type SortDir   = 'asc' | 'desc';
 type OppFilter = 'all' | 'hot' | 'mild' | 'low';
+type IntervalFilter = 'all' | '1' | '4' | '8';
 
 /** FundingRateEntry enriched with client-side computed spread + opportunity */
 type EnrichedRow = FundingRateEntry & {
@@ -165,6 +173,7 @@ export default function FundingRateTable({
   const [sortKey,    setSortKey]   = useState<SortKey>('maxSpread');
   const [sortDir,    setSortDir]   = useState<SortDir>('desc');
   const [oppFilter,  setOppFilter] = useState<OppFilter>('all');
+  const [intervalFilter, setIntervalFilter] = useState<IntervalFilter>('all');
   const [search,     setSearch]    = useState('');
   const [pairLimit,  setPairLimit] = useState<number | null>(null);
   const [minSpread,  setMinSpread] = useState<number>(0);
@@ -313,6 +322,12 @@ export default function FundingRateTable({
     // Filter by computed opportunity (client-side, reflects selected exchanges)
     if (oppFilter !== 'all') rows = rows.filter((r) => r.computedOpportunity === oppFilter);
 
+    if (intervalFilter !== 'all') {
+      rows = rows.filter((r) => 
+        String(r.fundingIntervalHours) === intervalFilter
+      );
+    }
+
     // Filter by computed spread (not server-side maxSpread)
     if (minSpread > 0) rows = rows.filter((r) => r.computedSpread >= minSpread);
 
@@ -346,11 +361,16 @@ export default function FundingRateTable({
 
     if (pairLimit !== null) rows = rows.slice(0, pairLimit);
     return rows;
-  }, [enrichedData, oppFilter, minSpread, minVolume, search, sortKey, sortDir, pairLimit]);
+  }, [enrichedData, oppFilter, intervalFilter, minSpread, minVolume, search, sortKey, sortDir, pairLimit]);
 
   const totalAfterFilters = useMemo(() => {
     let rows = [...enrichedData];
     if (oppFilter !== 'all') rows = rows.filter((r) => r.computedOpportunity === oppFilter);
+    if (intervalFilter !== 'all') {
+      rows = rows.filter((r) => 
+        String(r.fundingIntervalHours) === intervalFilter
+      );
+    }
     if (minSpread > 0)       rows = rows.filter((r) => r.computedSpread >= minSpread);
     if (minVolume > 0)       rows = rows.filter((r) => r.volume24h >= minVolume);
     if (search.trim()) {
@@ -359,7 +379,7 @@ export default function FundingRateTable({
         r.symbol.toLowerCase().includes(q) || r.baseAsset.toLowerCase().includes(q));
     }
     return rows.length;
-  }, [enrichedData, oppFilter, minSpread, minVolume, search]);
+  }, [enrichedData, oppFilter, intervalFilter, minSpread, minVolume, search]);
 
   // ── Sub-components ────────────────────────────────────────────────────────
   function SortIcon({ k }: { k: SortKey }) {
@@ -378,7 +398,8 @@ export default function FundingRateTable({
   const progressPct       = ((AUTO_REFRESH_SEC - countdown) / AUTO_REFRESH_SEC) * 100;
   const activeFiltersCount =
     (oppFilter !== 'all' ? 1 : 0) + (minSpread > 0 ? 1 : 0) +
-    (minVolume > 0 ? 1 : 0) + (pairLimit !== null ? 1 : 0) + (search ? 1 : 0);
+    (minVolume > 0 ? 1 : 0) + (pairLimit !== null ? 1 : 0) + (search ? 1 : 0) +
+    (intervalFilter !== 'all' ? 1 : 0);
   // Market + Price + exchanges + MaxSpread + Interval + 24hVol + NextFunding + Opp + Trade
   const totalCols = 2 + activeExchanges.length + 6;
 
@@ -435,6 +456,28 @@ export default function FundingRateTable({
 
           <div className="control-group">
             <div className="control-label">
+              <Clock size={13} style={{ color: '#a78bfa' }} />
+              Interval
+            </div>
+            <div className="control-pills" role="group" aria-label="Funding interval filter">
+              {INTERVAL_OPTIONS.map((opt) => {
+                const active = intervalFilter === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    className={`cpill ${active ? 'cpill-active cpill-purple' : ''}`}
+                    onClick={() => setIntervalFilter(opt.value)}
+                    aria-pressed={active}
+                  >{opt.label}</button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="control-divider" aria-hidden="true" />
+
+          <div className="control-group">
+            <div className="control-label">
               <Eye size={13} style={{ color: 'var(--warning)' }} />
               Min 24h Vol
             </div>
@@ -457,7 +500,7 @@ export default function FundingRateTable({
           {activeFiltersCount > 0 && (
             <button
               className="reset-filters-btn"
-              onClick={() => { setPairLimit(null); setMinSpread(0); setMinVolume(0); setOppFilter('all'); setSearch(''); }}
+              onClick={() => { setPairLimit(null); setMinSpread(0); setMinVolume(0); setOppFilter('all'); setIntervalFilter('all'); setSearch(''); }}
               aria-label="Reset all filters"
               id="reset-filters-btn"
             >
@@ -643,7 +686,7 @@ export default function FundingRateTable({
       >
         <div
           ref={scrollInnerRef}
-          className="table-scroll-inner"
+          className="table-overflow"
           onMouseDown={onMouseDown}
           style={{ cursor: 'grab' }}
         >
@@ -654,15 +697,21 @@ export default function FundingRateTable({
                 <th
                   onClick={() => handleSort('symbol')}
                   className={sortKey === 'symbol' ? 'sorted' : ''}
-                  style={{ paddingRight: 8 }}
+                  style={{ paddingRight: 4, width: '160px', minWidth: '160px' }}
                 >
                   <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                     Market <SortIcon k="symbol" />
                   </span>
                 </th>
-                <th className={`right ${sortKey === 'price' ? 'sorted' : ''}`} onClick={() => handleSort('price')}>
+                <th className={`right ${sortKey === 'price' ? 'sorted' : ''}`} onClick={() => handleSort('price')} style={{ paddingLeft: 4, width: '110px', minWidth: '110px' }}>
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
                     Price <SortIcon k="price" />
+                  </span>
+                </th>
+
+                <th className={`right ${sortKey === 'maxSpread' ? 'sorted' : ''}`} onClick={() => handleSort('maxSpread')} style={{ width: '110px', minWidth: '110px' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
+                    Max Spread <SortIcon k="maxSpread" />
                   </span>
                 </th>
 
@@ -684,11 +733,6 @@ export default function FundingRateTable({
                   );
                 })}
 
-                <th className={`right ${sortKey === 'maxSpread' ? 'sorted' : ''}`} onClick={() => handleSort('maxSpread')}>
-                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
-                    Max Spread <SortIcon k="maxSpread" />
-                  </span>
-                </th>
                 <th className="right" title="Funding interval from Binance. Hover a rate cell for annualized return.">
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
                     <Clock size={10} style={{ opacity: 0.6 }} /> Interval
@@ -717,14 +761,14 @@ export default function FundingRateTable({
                     No pairs match the current filters.{' '}
                     <button
                       style={{ background: 'none', border: 'none', color: 'var(--accent-blue)', cursor: 'pointer', textDecoration: 'underline', fontSize: 'inherit' }}
-                      onClick={() => { setPairLimit(null); setMinSpread(0); setMinVolume(0); setOppFilter('all'); setSearch(''); }}
+                      onClick={() => { setPairLimit(null); setMinSpread(0); setMinVolume(0); setOppFilter('all'); setIntervalFilter('all'); setSearch(''); }}
                     >Reset filters</button>
                   </td>
                 </tr>
               ) : (
                 visibleRows.map((row, i) => (
                   <tr key={row.id} style={{ animationDelay: `${Math.min(i * 20, 400)}ms` }}>
-                    <td style={{ paddingRight: 8 }}>
+                    <td style={{ paddingRight: 4 }}>
                       <div className="symbol-cell">
                         <div
                           className="token-logo"
@@ -741,7 +785,7 @@ export default function FundingRateTable({
                       </div>
                     </td>
 
-                    <td className="right">
+                    <td className="right" style={{ paddingLeft: 4 }}>
                       <div className="mono" style={{ fontSize: '0.875rem', fontWeight: 600 }}>
                         {fmtPrice(row.price)}
                       </div>
@@ -752,25 +796,6 @@ export default function FundingRateTable({
                         {row.priceChange24h >= 0 ? '+' : ''}{row.priceChange24h.toFixed(2)}%
                       </div>
                     </td>
-
-                    {activeExchanges.map((ex) => {
-                      const rate = row[ex.key] as number | null;
-                      // Show interval badge only on the Binance column
-                      const isBinance = ex.key === 'binance';
-                      const intervalHours = isBinance ? row.fundingIntervalHours : undefined;
-                      const tooltipText = rate !== null
-                        ? `Annualized: ${annualizedRate(rate, row.fundingIntervalHours)}`
-                        : undefined;
-                      return (
-                        <td
-                          key={ex.key as string}
-                          className="right rate-cell"
-                          title={tooltipText}
-                        >
-                          {fmtRate(rate, intervalHours)}
-                        </td>
-                      );
-                    })}
 
                     <td className="right">
                       <div
@@ -797,6 +822,25 @@ export default function FundingRateTable({
                         />
                       </div>
                     </td>
+
+                    {activeExchanges.map((ex) => {
+                      const rate = row[ex.key] as number | null;
+                      // Show interval badge only on the Binance column
+                      const isBinance = ex.key === 'binance';
+                      const intervalHours = isBinance ? row.fundingIntervalHours : undefined;
+                      const tooltipText = rate !== null
+                        ? `Annualized: ${annualizedRate(rate, row.fundingIntervalHours)}`
+                        : undefined;
+                      return (
+                        <td
+                          key={ex.key as string}
+                          className="right rate-cell"
+                          title={tooltipText}
+                        >
+                          {fmtRate(rate, intervalHours)}
+                        </td>
+                      );
+                    })}
 
                     {/* ── Interval column ─────────────────────────────────────────── */}
                     <td className="right">
@@ -838,6 +882,37 @@ export default function FundingRateTable({
             </tbody>
           </table>
           </div>
+        </div>
+
+        <div style={{
+          width: '100%',
+          marginTop: '8px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '10px',
+        }}>
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
+            ← Scroll →
+          </span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            defaultValue="0"
+            style={{
+              width: '100%',
+              accentColor: 'var(--accent-blue)',
+              cursor: 'pointer',
+              height: '4px',
+            }}
+            onChange={(e) => {
+              const tableEl = document.querySelector('.table-overflow') as HTMLElement;
+              if (tableEl) {
+                const maxScroll = tableEl.scrollWidth - tableEl.clientWidth;
+                tableEl.scrollLeft = (Number(e.target.value) / 100) * maxScroll;
+              }
+            }}
+          />
         </div>
       </div>
 
@@ -898,6 +973,12 @@ export default function FundingRateTable({
         .cpill-active.cpill-orange {
           background: #f59e0b; border-color: #f59e0b;
           box-shadow: 0 0 14px rgba(245,158,11,0.35);
+        }
+
+        .cpill-active.cpill-purple {
+          background: #7c3aed;
+          border-color: #7c3aed;
+          box-shadow: 0 0 14px rgba(124,58,237,0.35);
         }
 
         /* ── Control Panel ── */
@@ -1066,6 +1147,88 @@ export default function FundingRateTable({
         /* ── General ── */
         @keyframes spin { to { transform: rotate(360deg); } }
         .exchange-down { opacity: 0.55; }
+
+        .funding-table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        .funding-table th:first-child,
+        .funding-table td:first-child {
+          width: 160px;
+          min-width: 160px;
+          max-width: 160px;
+        }
+        .funding-table th:nth-child(2),
+        .funding-table td:nth-child(2) {
+          width: 110px;
+          min-width: 110px;
+          max-width: 110px;
+        }
+        .funding-table th:nth-child(3),
+        .funding-table td:nth-child(3) {
+          width: 110px;
+          min-width: 110px;
+          max-width: 110px;
+        }
+        .funding-table th.right,
+        .funding-table td.right {
+          width: 100px;
+          min-width: 90px;
+        }
+        .symbol-cell {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          overflow: hidden;
+        }
+        .symbol-name {
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          max-width: 110px;
+        }
+        .token-logo {
+          width: 32px;
+          height: 32px;
+          min-width: 32px;
+          border-radius: 50%;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.6rem;
+          font-weight: 800;
+          border: 1px solid;
+          flex-shrink: 0;
+        }
+
+        .table-overflow {
+          position: relative;
+          width: 100%;
+          overflow-x: auto;
+          overflow-y: visible;
+          scroll-behavior: smooth;
+          -webkit-overflow-scrolling: touch;
+        }
+        .table-overflow::-webkit-scrollbar {
+          height: 8px;
+        }
+        .table-overflow::-webkit-scrollbar-track {
+          background: rgba(255,255,255,0.05);
+          border-radius: 4px;
+        }
+        .table-overflow::-webkit-scrollbar-thumb {
+          background: rgba(99,130,246,0.5);
+          border-radius: 4px;
+        }
+        .table-overflow::-webkit-scrollbar-thumb:hover {
+          background: rgba(99,130,246,0.8);
+        }
+        .funding-table thead th {
+          position: sticky;
+          top: 0;
+          z-index: 10;
+          background: var(--surface);
+        }
 
         @media (max-width: 768px) {
           .control-divider { display: none; }
