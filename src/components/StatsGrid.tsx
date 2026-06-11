@@ -1,10 +1,10 @@
 'use client';
 
 import { Activity, DollarSign, Zap, TrendingUp } from 'lucide-react';
-import type { FundingRateEntry } from '@/app/api/funding-rates/route';
+import type { EnrichedRow } from './FundingRateTable';
 
 interface Props {
-  data: FundingRateEntry[];
+  data: EnrichedRow[];
 }
 
 function fmt(n: number, decimals = 2) {
@@ -19,10 +19,10 @@ function fmtLarge(n: number) {
 }
 
 export default function StatsGrid({ data }: Props) {
-  const hotCount = data.filter((d) => d.opportunity === 'hot').length;
-  const avgSpread = data.reduce((s, d) => s + d.maxSpread, 0) / (data.length || 1);
+  const hotCount = data.filter((d) => d.computedOpportunity === 'hot').length;
+  const avgSpread = data.reduce((s, d) => s + d.computedSpread, 0) / (data.length || 1);
   const totalVol = data.reduce((s, d) => s + d.volume24h, 0);
-  const maxOpp = data.reduce((best, d) => (d.maxSpread > best.maxSpread ? d : best), data[0]);
+  const maxOpp = data.reduce((best, d) => (d.computedSpread > best.computedSpread ? d : best), data[0]);
 
   return (
     <div className="stats-grid">
@@ -71,7 +71,7 @@ export default function StatsGrid({ data }: Props) {
           Best Spread
         </div>
         <div className="stat-value" style={{ color: 'var(--positive)' }}>
-          {maxOpp ? fmt(maxOpp.maxSpread * 100, 3) + '%' : '—'}
+          {maxOpp ? fmt(maxOpp.computedSpread * 100, 3) + '%' : '—'}
         </div>
         <div className="stat-delta">
           {maxOpp ? maxOpp.symbol : ''}
