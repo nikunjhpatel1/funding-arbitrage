@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { TrendingUp, AlertTriangle, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import StatsGrid from '@/components/StatsGrid';
-import FundingRateTable from '@/components/FundingRateTable';
+import FundingRateTable, { type EnrichedRow } from '@/components/FundingRateTable';
 
 interface FundingRateEntry {
   id: string;
@@ -35,6 +35,7 @@ interface FundingRateEntry {
   opportunity: 'hot' | 'mild' | 'low';
   nextFunding: string;
   exchangeErrors: string[];
+  exchangeIntervals: Record<string, number>;
 }
 
 interface ApiResponse {
@@ -56,9 +57,11 @@ export default function HomePage() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isInitial, setIsInitial] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [enrichedData, setEnrichedData] = useState<EnrichedRow[]>([]);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
   }, []);
 
@@ -142,7 +145,7 @@ export default function HomePage() {
         })}
       </div>
 
-      {apiData && <StatsGrid data={apiData.data} />}
+      {apiData && enrichedData.length > 0 && <StatsGrid data={enrichedData} />}
 
       {error && (
         <div style={{
@@ -186,6 +189,7 @@ export default function HomePage() {
           isRefreshing={isRefreshing}
           updatedAt={apiData.updatedAt}
           exchangeStatus={apiData.exchangeStatus}
+          onEnrichedDataChange={setEnrichedData}
         />
       )}
 

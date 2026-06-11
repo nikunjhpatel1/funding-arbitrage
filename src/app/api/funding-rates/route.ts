@@ -1,4 +1,6 @@
 import { NextResponse } from 'next/server';
+import db from '@/lib/db';
+
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 // ─── API endpoints ────────────────────────────────────────────────────────────
@@ -58,6 +60,7 @@ export interface FundingRateEntry {
   blofin: number | null;
   delta: number | null;
   // ─────────────────────────────────────────────────────────────────────────
+  exchangeIntervals: Record<string, number>;
   maxSpread: number;
   opportunity: 'hot' | 'mild' | 'low';
   nextFunding: string;
@@ -480,14 +483,14 @@ async function fetchHyperliquid(): Promise<FetchResult<SimpleRateData>> {
 
     for (let i = 0; i < universe.length; i++) {
       const base = universe[i].name;
-      // 1h raw rate; multiply ×8 to normalise to 8h equivalent for spread comparison
+      // 1h raw rate
       const hourlyRate = parseRate(ctxs[i]?.funding);
       if (hourlyRate === null) continue;
       const nextHour = new Date();
       nextHour.setUTCMinutes(0, 0, 0);
       nextHour.setUTCHours(nextHour.getUTCHours() + 1);
       data.set(base, {
-        rate: parseFloat((hourlyRate * 8).toFixed(8)),
+        rate: hourlyRate,
         nextFunding: nextHour.toISOString(),
       });
     }
@@ -504,10 +507,10 @@ async function fetchHyperliquid(): Promise<FetchResult<SimpleRateData>> {
  * OKX USDT-margined Swaps
  * Field: fundingRate from /api/v5/public/funding-rate
  */
-async function fetchOKX(bases: Iterable<string>): Promise<FetchResult<SimpleRateData>> {
+async function fetchOKX(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
     try {
       const res = await fetchWithTimeout(OKX_FUNDING(base));
       if (!res.ok) return;
@@ -519,7 +522,7 @@ async function fetchOKX(bases: Iterable<string>): Promise<FetchResult<SimpleRate
       data.set(base, { rate, nextFunding: new Date(Number(d.fundingTime)).toISOString() });
       anySuccess = true;
     } catch { /* instrument may not exist on OKX */ }
-  }));
+  })));
   return { data, ok: anySuccess || data.size > 0 };
 }
 
@@ -527,10 +530,10 @@ async function fetchOKX(bases: Iterable<string>): Promise<FetchResult<SimpleRate
  * Bitget USDT Futures
  * Field: fundingRate from /api/v2/mix/market/current-fund-rate
  */
-async function fetchBitget(bases: Iterable<string>): Promise<FetchResult<SimpleRateData>> {
+async function fetchBitget(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
     try {
       const res = await fetchWithTimeout(BITGET_FUND_RATE(base));
       if (!res.ok) return;
@@ -548,7 +551,7 @@ async function fetchBitget(bases: Iterable<string>): Promise<FetchResult<SimpleR
       });
       anySuccess = true;
     } catch { }
-  }));
+  })));
   return { data, ok: anySuccess || data.size > 0 };
 }
 
@@ -556,10 +559,10 @@ async function fetchBitget(bases: Iterable<string>): Promise<FetchResult<SimpleR
  * MEXC Contract
  * Field: fundingRate from /api/v1/contract/funding_rate/{symbol}
  */
-async function fetchMEXC(bases: Iterable<string>): Promise<FetchResult<SimpleRateData>> {
+async function fetchMEXC(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
     try {
       const res = await fetchWithTimeout(MEXC_FUND_RATE(base));
       if (!res.ok) return;
@@ -577,7 +580,7 @@ async function fetchMEXC(bases: Iterable<string>): Promise<FetchResult<SimpleRat
       });
       anySuccess = true;
     } catch { }
-  }));
+  })));
   return { data, ok: anySuccess || data.size > 0 };
 }
 
@@ -585,12 +588,12 @@ async function fetchMEXC(bases: Iterable<string>): Promise<FetchResult<SimpleRat
  * KuCoin Futures
  * Field: fundingRate (→ value → predictedValue) from /api/v1/funding-rate/{symbol}/current
  */
-async function fetchKuCoin(bases: Iterable<string>): Promise<FetchResult<SimpleRateData>> {
+async function fetchKuCoin(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
   const kuCoinSym = (b: string) => b === 'BTC' ? 'XBTUSDTM' : `${b}USDTM`;
 
-  await Promise.allSettled([...bases].map(async (base) => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
     try {
       const res = await fetchWithTimeout(KUCOIN_FUND_RATE(kuCoinSym(base)));
       if (!res.ok) return;
@@ -607,8 +610,8 @@ async function fetchKuCoin(bases: Iterable<string>): Promise<FetchResult<SimpleR
           : new Date(Date.now() + 28_800_000).toISOString(),
       });
       anySuccess = true;
-    } catch { }
-  }));
+    } catch { /* instrument may not exist on kucoin */ }
+  })));
   return { data, ok: anySuccess || data.size > 0 };
 }
 
@@ -616,10 +619,10 @@ async function fetchKuCoin(bases: Iterable<string>): Promise<FetchResult<SimpleR
  * BingX USDT Perpetual
  * Field: fundingRate (→ lastFundingRate) from /openApi/swap/v2/quote/fundingRate
  */
-async function fetchBingX(bases: Iterable<string>): Promise<FetchResult<SimpleRateData>> {
+async function fetchBingX(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
     try {
       const res = await fetchWithTimeout(BINGX_FUND_RATE(base));
       if (!res.ok) return;
@@ -637,7 +640,7 @@ async function fetchBingX(bases: Iterable<string>): Promise<FetchResult<SimpleRa
       });
       anySuccess = true;
     } catch { }
-  }));
+  })));
   return { data, ok: anySuccess || data.size > 0 };
 }
 
@@ -645,10 +648,10 @@ async function fetchBingX(bases: Iterable<string>): Promise<FetchResult<SimpleRa
  * HTX (Huobi) Coin-margined Perpetual Swaps
  * Field: funding_rate from /swap-api/v1/swap_funding_rate?contract_code={BASE}-USD
  */
-async function fetchHTX(bases: Iterable<string>): Promise<FetchResult<SimpleRateData>> {
+async function fetchHTX(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
     try {
       const res = await fetchWithTimeout(HTX_FUND_RATE(base));
       if (!res.ok) return;
@@ -666,7 +669,7 @@ async function fetchHTX(bases: Iterable<string>): Promise<FetchResult<SimpleRate
       });
       anySuccess = true;
     } catch { }
-  }));
+  })));
   return { data, ok: anySuccess || data.size > 0 };
 }
 
@@ -674,10 +677,10 @@ async function fetchHTX(bases: Iterable<string>): Promise<FetchResult<SimpleRate
  * BloFin
  * Field: fundingRate from /api/v1/market/funding-rate?instId={BASE}-USDT
  */
-async function fetchBloFin(bases: Iterable<string>): Promise<FetchResult<SimpleRateData>> {
+async function fetchBloFin(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
     try {
       const res = await fetchWithTimeout(BLOFIN_FUND_RATE(base));
       if (!res.ok) return;
@@ -695,7 +698,7 @@ async function fetchBloFin(bases: Iterable<string>): Promise<FetchResult<SimpleR
       });
       anySuccess = true;
     } catch { }
-  }));
+  })));
   return { data, ok: anySuccess || data.size > 0 };
 }
 
@@ -717,40 +720,54 @@ function withDeadline<T>(p: Promise<T>, ms: number): Promise<T | null> {
   return Promise.race([p, new Promise<null>((r) => setTimeout(() => r(null), ms))]);
 }
 
+function pLimit(concurrency: number) {
+  const queue: Array<() => void> = [];
+  let activeCount = 0;
+
+  const next = () => {
+    activeCount--;
+    if (queue.length > 0) {
+      const task = queue.shift()!;
+      task();
+    }
+  };
+
+  return async <T>(fn: () => Promise<T>): Promise<T> => {
+    if (activeCount >= concurrency) {
+      await new Promise<void>((resolve) => queue.push(resolve));
+    }
+    activeCount++;
+    try {
+      return await fn();
+    } finally {
+      next();
+    }
+  };
+}
+
 // ─── Route Handler ────────────────────────────────────────────────────────────
 // In production we must finish within Vercel Hobby's 10 s function limit.
 // In development there's no such constraint, so we use generous timeouts.
-const IS_DEV = process.env.NODE_ENV === 'development';
-const TOTAL_BUDGET_MS = IS_DEV ? 50_000 : 8_000;  // 8 s prod, 50 s dev
-const PHASE1_MS       = IS_DEV ? 45_000 : 7_000;
 
-export async function GET() {
+let globalCache: ApiResponse | null = null;
+let lastFetchTime = 0;
+let isFetching = false;
+
+async function performFetch(budgetMs: number): Promise<ApiResponse> {
   const START = Date.now();
+  const phase1Ms = Math.min(budgetMs * 0.6, 7000);
 
-  // ── Phase 1: all batch exchanges fire concurrently (7 s budget) ───────────
-  const phase1 = Promise.all([
-    fetchBinance(),
-    fetchBybit(),
-    fetchGateio(),
-    fetchBitMEX(),
-    fetchPhemex(),
-    fetchDelta(),
-    fetchDydx(),
-    fetchHyperliquid(),
+  // ── Phase 1: all batch exchanges fire concurrently ───────────
+  const [binance, bybit, gateio, bitmex, phemex, delta, dydx, hyperliquid] = await Promise.all([
+    withDeadline(fetchBinance(), phase1Ms).then(r => r ?? { data: new Map(), intervalMap: new Map(), ok: false }),
+    withDeadline(fetchBybit(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchGateio(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchBitMEX(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchPhemex(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchDelta(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchDydx(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchHyperliquid(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
   ]);
-
-  const phase1Results = await withDeadline(phase1, PHASE1_MS);
-  const [binance, bybit, gateio, bitmex, phemex, delta, dydx, hyperliquid] =
-    phase1Results ?? [
-      { data: new Map(), intervalMap: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-    ];
 
   // Build the master base set from all batch results
   const allBases = new Set<string>();
@@ -766,30 +783,18 @@ export async function GET() {
   // ── Phase 2: per-symbol exchanges, top coins only, within remaining budget ──
   // We limit to TOP_BASES to avoid 400+ outbound requests.
   const phase2Bases = new Set([...allBases].filter((b) => TOP_BASES.has(b)));
-  // Give Phase 2 whatever time is left up to 8 s total, minus a 200 ms margin.
-  const remainingMs = Math.max(0, TOTAL_BUDGET_MS - (Date.now() - START) - 200);
+  const remainingMs = Math.max(0, budgetMs - (Date.now() - START) - 200);
 
-  const phase2 = Promise.all([
-    fetchOKX(phase2Bases),
-    fetchBitget(phase2Bases),
-    fetchMEXC(phase2Bases),
-    fetchKuCoin(phase2Bases),
-    fetchBingX(phase2Bases),
-    fetchHTX(phase2Bases),
-    fetchBloFin(phase2Bases),
+  const limit = pLimit(15);
+  const [okx, bitget, mexc, kucoin, bingx, htx, blofin] = await Promise.all([
+    withDeadline(fetchOKX(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchBitget(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchMEXC(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchKuCoin(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchBingX(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchHTX(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(fetchBloFin(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
   ]);
-
-  const phase2Results = await withDeadline(phase2, remainingMs);
-  const [okx, bitget, mexc, kucoin, bingx, htx, blofin] =
-    phase2Results ?? [
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-      { data: new Map(), ok: false },
-    ];
 
   // Also add any bases discovered by per-symbol exchanges
   for (const [b] of okx.data) allBases.add(b);
@@ -862,8 +867,46 @@ export async function GET() {
     // Skip pairs with no data at all
     if (validRates.length === 0) continue;
 
-    const maxSpread = validRates.length > 1
-      ? parseFloat((Math.max(...validRates) - Math.min(...validRates)).toFixed(8))
+    // Funding interval from Binance fundingInfo; default 8h
+    const fundingIntervalHours = binance.intervalMap.get(base) ?? 8;
+    const exchangeIntervals: Record<string, number> = {
+      binance: fundingIntervalHours,
+      bybit: 8,
+      okx: 8,
+      bitget: 8,
+      kucoin: 8,
+      gateio: 8,
+      mexc: 8,
+      bingx: 8,
+      htx: 8,
+      bitmex: 8,
+      dydx: 1,
+      hyperliquid: 1,
+      phemex: 8,
+      blofin: 8,
+      delta: 8,
+    };
+
+    const normalizedRates = [
+      binRate !== null ? binRate * (8 / exchangeIntervals.binance) : null,
+      byRate !== null ? byRate * (8 / exchangeIntervals.bybit) : null,
+      okRate !== null ? okRate * (8 / exchangeIntervals.okx) : null,
+      dyRate !== null ? dyRate * (8 / exchangeIntervals.dydx) : null,
+      hlRate !== null ? hlRate * (8 / exchangeIntervals.hyperliquid) : null,
+      bgRate !== null ? bgRate * (8 / exchangeIntervals.bitget) : null,
+      gtRate !== null ? gtRate * (8 / exchangeIntervals.gateio) : null,
+      mxRate !== null ? mxRate * (8 / exchangeIntervals.mexc) : null,
+      kcRate !== null ? kcRate * (8 / exchangeIntervals.kucoin) : null,
+      bxRate !== null ? bxRate * (8 / exchangeIntervals.bingx) : null,
+      hxRate !== null ? hxRate * (8 / exchangeIntervals.htx) : null,
+      bmRate !== null ? bmRate * (8 / exchangeIntervals.bitmex) : null,
+      pxRate !== null ? pxRate * (8 / exchangeIntervals.phemex) : null,
+      bfRate !== null ? bfRate * (8 / exchangeIntervals.blofin) : null,
+      dlRate !== null ? dlRate * (8 / exchangeIntervals.delta) : null,
+    ].filter((r): r is number => r !== null);
+
+    const maxSpread = normalizedRates.length > 1
+      ? parseFloat((Math.max(...normalizedRates) - Math.min(...normalizedRates)).toFixed(8))
       : 0;
 
     // Price / volume: Binance is primary, dYdX secondary
@@ -872,8 +915,6 @@ export async function GET() {
     const volume24h = binD?.volume24h ?? dyD?.volume24h ?? 0;
     const openInterest = binD?.openInterest ?? dyD?.openInterest ?? 0;
 
-    // Funding interval from Binance fundingInfo; default 8h
-    const fundingIntervalHours = binance.intervalMap.get(base) ?? 8;
 
     // Earliest next funding across all exchanges with data
     const fundingTimes = [
@@ -892,6 +933,16 @@ export async function GET() {
     if (okRate === null && okx.ok) exchangeErrors.push('okx');
     if (dyRate === null && dydx.ok) exchangeErrors.push('dydx');
     if (hlRate === null && hyperliquid.ok) exchangeErrors.push('hyperliquid');
+    if (bgRate === null && bitget.ok) exchangeErrors.push('bitget');
+    if (gtRate === null && gateio.ok) exchangeErrors.push('gateio');
+    if (mxRate === null && mexc.ok) exchangeErrors.push('mexc');
+    if (kcRate === null && kucoin.ok) exchangeErrors.push('kucoin');
+    if (bxRate === null && bingx.ok) exchangeErrors.push('bingx');
+    if (hxRate === null && htx.ok) exchangeErrors.push('htx');
+    if (bmRate === null && bitmex.ok) exchangeErrors.push('bitmex');
+    if (pxRate === null && phemex.ok) exchangeErrors.push('phemex');
+    if (bfRate === null && blofin.ok) exchangeErrors.push('blofin');
+    if (dlRate === null && delta.ok) exchangeErrors.push('delta');
 
     entries.push({
       id: `${base}-USDT`,
@@ -919,6 +970,7 @@ export async function GET() {
       phemex: pxRate,
       blofin: bfRate,
       delta: dlRate,
+      exchangeIntervals,
       maxSpread,
       opportunity: opportunityLevel(maxSpread),
       nextFunding,
@@ -929,12 +981,139 @@ export async function GET() {
   // Default sort: highest spread first (best arbitrage opportunities at top)
   entries.sort((a, b) => b.maxSpread - a.maxSpread);
 
-  return NextResponse.json(
-    { data: entries, updatedAt: new Date().toISOString(), exchangeStatus } satisfies ApiResponse,
-    { headers: {
-      'Cache-Control': 'public, s-maxage=30, stale-while-revalidate=60',
+  return { data: entries, updatedAt: new Date().toISOString(), exchangeStatus };
+}
+
+export async function GET() {
+  const now = Date.now();
+  
+  if (globalCache && now - lastFetchTime < 15_000) {
+    return NextResponse.json(globalCache, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET',
+      }
+    });
+  }
+
+  if (globalCache && isFetching) {
+    return NextResponse.json(globalCache, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET',
+      }
+    });
+  }
+
+  if (!globalCache) {
+    isFetching = true;
+    try {
+      // Very strict initial budget to hit < 5s load time (4.5s max)
+      globalCache = await performFetch(4500);
+      lastFetchTime = Date.now();
+      saveHistoricalData(globalCache.data);
+    } finally {
+      isFetching = false;
+    }
+    
+    // Background refresh for remaining exchanges 
+    if (globalCache) {
+      isFetching = true;
+      performFetch(15_000).then((data) => {
+        globalCache = data;
+        lastFetchTime = Date.now();
+      }).catch((e) => console.error('Background refresh failed', e)).finally(() => {
+        isFetching = false;
+      });
+    }
+
+    return NextResponse.json(globalCache, {
+      headers: {
+        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET',
+      }
+    });
+  }
+
+  // Stale cache, start background refresh
+  isFetching = true;
+  performFetch(15_000).then((data) => {
+    globalCache = data;
+    lastFetchTime = Date.now();
+    saveHistoricalData(data.data);
+  }).catch((e) => console.error('Background refresh failed', e)).finally(() => {
+    isFetching = false;
+  });
+
+  return NextResponse.json(globalCache, {
+    headers: {
+      'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET',
-    } },
-  );
+    }
+  });
 }
+
+// ─── Historical Data Save ───────────────────────────────────────────────────
+function saveHistoricalData(entries: FundingRateEntry[]) {
+  try {
+    const now = Date.now();
+      // Retention strategy: Round timestamp to the current hour to prevent duplicate writes
+      // within the same hour and keep the SQLite database size optimized.
+      const timestamp = Math.floor(now / 3600000) * 3600000;
+      
+      const stmt = db.prepare(`
+        INSERT OR IGNORE INTO funding_history 
+        (timestamp, symbol, exchange, funding_rate, funding_interval, mark_price, volume_24h)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      interface HistoryRow {
+        timestamp: number;
+        symbol: string;
+        exchange: string;
+        funding_rate: number;
+        funding_interval: number;
+        mark_price: number;
+        volume_24h: number;
+      }
+
+      const insertMany = db.transaction((rows: HistoryRow[]) => {
+        for (const row of rows) {
+          stmt.run(row.timestamp, row.symbol, row.exchange, row.funding_rate, row.funding_interval, row.mark_price, row.volume_24h);
+        }
+      });
+
+      const rows: HistoryRow[] = [];
+      const exchangesList = [
+        'binance', 'bybit', 'okx', 'bitget', 'kucoin', 'gateio', 'mexc',
+        'bingx', 'htx', 'bitmex', 'dydx', 'hyperliquid', 'phemex', 'blofin', 'delta'
+      ];
+
+      for (const entry of entries) {
+        for (const ex of exchangesList) {
+          const rate = entry[ex as keyof FundingRateEntry];
+          if (typeof rate === 'number' && rate !== null) {
+            const interval = entry.exchangeIntervals?.[ex] ?? 8;
+            rows.push({
+              timestamp,
+              symbol: entry.symbol,
+              exchange: ex,
+              funding_rate: rate,
+              funding_interval: interval,
+              mark_price: entry.price,
+              volume_24h: entry.volume24h
+            });
+          }
+        }
+      }
+
+    insertMany(rows);
+  } catch (e) {
+    console.error('[SQLite] Failed to save historical data', e);
+  }
+}
+

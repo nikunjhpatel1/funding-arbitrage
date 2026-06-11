@@ -717,6 +717,25 @@ body {
 .animate-fade-up-3 { animation-delay: 0.15s; }
 .animate-fade-up-4 { animation-delay: 0.20s; }
 
+/* ─── Skeletons ──────────────────────────────────────────────────────────── */
+@keyframes pulse-skeleton {
+  0% { opacity: 0.3; }
+  50% { opacity: 0.1; }
+  100% { opacity: 0.3; }
+}
+.skeleton-row {
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+.skeleton-pulse {
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--text-muted);
+  animation: pulse-skeleton 1.5s infinite ease-in-out;
+  margin: 12px 0;
+  width: 100%;
+}
+
 /* ─── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .navbar-links { display: none; }
