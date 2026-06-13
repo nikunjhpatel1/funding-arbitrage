@@ -36,6 +36,18 @@ const initSql = `
   CREATE INDEX IF NOT EXISTS idx_funding_history_symbol_time ON funding_history(symbol, timestamp);
   CREATE INDEX IF NOT EXISTS idx_funding_history_time ON funding_history(timestamp);
 
+  CREATE TABLE IF NOT EXISTS funding_rate_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    exchange TEXT NOT NULL,
+    funding_rate REAL,
+    price REAL,
+    next_funding_time INTEGER,
+    funding_interval_hours REAL,
+    recorded_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_history_lookup ON funding_rate_history(symbol, exchange, recorded_at);
+
     CREATE TABLE IF NOT EXISTS paper_positions (
       id TEXT PRIMARY KEY,
       symbol TEXT NOT NULL,

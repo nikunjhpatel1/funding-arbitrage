@@ -1138,10 +1138,8 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
 export async function GET() {
   const now = Date.now();
   
-  if (process.env.NODE_ENV === 'development') {
-    const data = await performFetch(28_000); // 5.5s budget
-    saveHistoricalData(data.data);
-    return NextResponse.json(data, {
+  if (oldGlobalCache && now - globalLastFetchTime < 10_000) {
+    return NextResponse.json(oldGlobalCache, {
       headers: {
         'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
         'Pragma': 'no-cache',
@@ -1149,78 +1147,40 @@ export async function GET() {
         'Access-Control-Allow-Methods': 'GET',
       }
     });
+  }
+
+  if (isFetching && oldGlobalCache) {
+    // If multiple concurrent requests happen during fetch, return cache
+    return NextResponse.json(oldGlobalCache, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET',
+      }
+    });
+  }
+
+  isFetching = true;
+  try {
+    oldGlobalCache = await performFetch(28_000);
+    globalLastFetchTime = Date.now();
+    
+    // Asynchronously save historical data and update positions so we don't block response
+    saveHistoricalData(oldGlobalCache.data).catch(console.error);
+    try {
+      updatePaperPositions(oldGlobalCache.data);
+    } catch (e) {
+      console.error(e);
+    }
+  } finally {
+    isFetching = false;
   }
   
-  if (oldGlobalCache && now - globalLastFetchTime < 15_000) {
-    return NextResponse.json(oldGlobalCache, {
-      headers: {
-        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-        'Pragma': 'no-cache',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET',
-      }
-    });
-  }
-
-  if (oldGlobalCache && isFetching) {
-    return NextResponse.json(oldGlobalCache, {
-      headers: {
-        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-        'Pragma': 'no-cache',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET',
-      }
-    });
-  }
-
-  if (!oldGlobalCache) {
-    isFetching = true;
-    try {
-      // Very strict initial budget to hit < 5s load time (4.5s max)
-      oldGlobalCache = await performFetch(28_000);
-      globalLastFetchTime = Date.now();
-      saveHistoricalData(oldGlobalCache.data);
-      updatePaperPositions(oldGlobalCache.data);
-    } finally {
-      isFetching = false;
-    }
-    
-    // Background refresh for remaining exchanges 
-    if (oldGlobalCache) {
-      isFetching = true;
-      performFetch(28_000).then((data) => {
-        oldGlobalCache = data;
-        globalLastFetchTime = Date.now();
-      }).catch((e) => console.error('Background refresh failed', e)).finally(() => {
-        isFetching = false;
-      });
-    }
-
-    return NextResponse.json(oldGlobalCache, {
-      headers: {
-        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-        'Pragma': 'no-cache',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET',
-      }
-    });
-  }
-
-  // Stale cache, start background refresh
-  isFetching = true;
-  performFetch(28_000).then((data) => {
-    oldGlobalCache = data;
-    globalLastFetchTime = Date.now();
-    saveHistoricalData(data.data);
-    updatePaperPositions(data.data);
-  }).catch((e) => console.error('Background refresh failed', e)).finally(() => {
-    isFetching = false;
-  });
-
   return NextResponse.json(oldGlobalCache, {
     headers: {
       'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
-        'Pragma': 'no-cache',
+      'Pragma': 'no-cache',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET',
     }
@@ -1228,60 +1188,62 @@ export async function GET() {
 }
 
 // ─── Historical Data Save ───────────────────────────────────────────────────
-function saveHistoricalData(entries: FundingRateEntry[]) {
+export async function saveHistoricalData(entries: FundingRateEntry[]) {
   try {
     const now = Date.now();
-      // Retention strategy: Round timestamp to the current hour to prevent duplicate writes
-      // within the same hour and keep the SQLite database size optimized.
-      const timestamp = Math.floor(now / 3600000) * 3600000;
       
-      const stmt = db.prepare(`
-        INSERT OR IGNORE INTO funding_history 
-        (timestamp, symbol, exchange, funding_rate, funding_interval, mark_price, volume_24h)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
+    const stmt = db.prepare(`
+      INSERT INTO funding_rate_history 
+      (symbol, exchange, funding_rate, price, next_funding_time, funding_interval_hours, recorded_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
 
-      interface HistoryRow {
-        timestamp: number;
-        symbol: string;
-        exchange: string;
-        funding_rate: number;
-        funding_interval: number;
-        mark_price: number;
-        volume_24h: number;
+    interface HistoryRow {
+      symbol: string;
+      exchange: string;
+      funding_rate: number;
+      price: number;
+      next_funding_time: number | null;
+      funding_interval_hours: number;
+      recorded_at: number;
+    }
+
+    const insertMany = db.transaction((rows: HistoryRow[]) => {
+      for (const row of rows) {
+        stmt.run(
+          row.symbol, row.exchange, row.funding_rate, row.price, 
+          row.next_funding_time, row.funding_interval_hours, row.recorded_at
+        );
       }
+    });
 
-      const insertMany = db.transaction((rows: HistoryRow[]) => {
-        for (const row of rows) {
-          stmt.run(row.timestamp, row.symbol, row.exchange, row.funding_rate, row.funding_interval, row.mark_price, row.volume_24h);
-        }
-      });
+    const rows: HistoryRow[] = [];
+    const exchangesList = [
+      'binance', 'bybit', 'okx', 'bitget', 'kucoin', 'gateio', 'mexc',
+      'bingx', 'htx', 'bitmex', 'dydx', 'hyperliquid', 'phemex', 'blofin', 'delta'
+    ];
 
-      const rows: HistoryRow[] = [];
-      const exchangesList = [
-        'binance', 'bybit', 'okx', 'bitget', 'kucoin', 'gateio', 'mexc',
-        'bingx', 'htx', 'bitmex', 'dydx', 'hyperliquid', 'phemex', 'blofin', 'delta'
-      ];
-
-      for (const entry of entries) {
-        for (const ex of exchangesList) {
-          const rate = entry[ex as keyof FundingRateEntry];
-          if (typeof rate === 'number' && rate !== null) {
-            const interval = entry.exchangeIntervals?.[ex] ?? 8;
-            rows.push({
-              timestamp,
-              symbol: entry.symbol,
-              exchange: ex,
-              funding_rate: rate,
-              funding_interval: interval,
-              mark_price: entry.price,
-              volume_24h: entry.volume24h
-            });
-          }
+    for (const entry of entries) {
+      for (const ex of exchangesList) {
+        const rate = entry[ex as keyof FundingRateEntry];
+        if (typeof rate === 'number' && rate !== null) {
+          const interval = entry.exchangeIntervals?.[ex] ?? 8;
+          const nextFunding = entry.exchangeNextFunding?.[ex] ? new Date(entry.exchangeNextFunding[ex]).getTime() : null;
+          rows.push({
+            symbol: entry.symbol,
+            exchange: ex,
+            funding_rate: rate,
+            price: entry.price,
+            next_funding_time: nextFunding,
+            funding_interval_hours: interval,
+            recorded_at: now
+          });
         }
       }
+    }
 
     insertMany(rows);
+    console.log(`[SQLite] Saved ${rows.length} rows to funding_rate_history`);
   } catch (e) {
     console.error('[SQLite] Failed to save historical data', e);
   }

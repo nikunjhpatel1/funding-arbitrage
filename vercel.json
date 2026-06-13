@@ -3,5 +3,9 @@
     "src/app/api/funding-rates/route.ts": {
       "maxDuration": 60
     }
-  }
+  },
+  "crons": [{
+    "path": "/api/cron/snapshot",
+    "schedule": "*/15 * * * *"
+  }]
 }
