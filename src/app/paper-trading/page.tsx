@@ -74,6 +74,7 @@ const LegPanel = ({
   fees,
   legUnrealized,
   isClosed,
+  timer,
 }: {
   label: string; color: string; exchange: string;
   entryPrice: number; currentPrice: number; closePrice?: number | null;
@@ -123,6 +124,8 @@ const NetArbPanel = ({
   totalFees,
   netPnl,
   isClosed,
+  apr,
+  breakevenText,
 }: {
   basisSpreadUsd: number; basisSpreadPct: number;
   longPricePnl: number; shortPricePnl: number; netPricePnl: number;
