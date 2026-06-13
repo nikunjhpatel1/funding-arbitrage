@@ -605,6 +605,7 @@ export default function PaperTradingPage() {
                   {activePositions.length === 0 ? (
                     <tr><td colSpan={8} style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>No active positions.</td></tr>
                   ) : activePositions.map(p => {
+                    const market = marketData.find(m => m.symbol === p.symbol);
                     // Fix: Use per-leg live prices fetched every 30s instead of market.price
                     const currLong      = livePrices[p.id]?.longPrice  ?? p.long_entry_price;
                     const currShort     = livePrices[p.id]?.shortPrice ?? p.short_entry_price;
