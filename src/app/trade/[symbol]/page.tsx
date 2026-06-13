@@ -2,9 +2,11 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import dynamic from 'next/dynamic';
 
 const HistoricalCharts = dynamic(() => import('@/components/HistoricalCharts'), { ssr: false });
+const OpportunityAnalysis = dynamic(() => import('@/components/OpportunityAnalysis'), { ssr: false });
 import { 
   ArrowLeft, TrendingUp, TrendingDown, 
   ExternalLink, AlertTriangle, Zap,
@@ -55,49 +57,6 @@ function fmtLarge(n: number) {
   if (n >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
   if (n >= 1e3) return `$${(n / 1e3).toFixed(1)}K`;
   return `$${n.toFixed(0)}`;
-}
-
-function calculateOpportunityScore(
-  spread: number,
-  vol: number,
-  longExchange: string,
-  shortExchange: string,
-  intervalHours: number
-) {
-  // Spread (40%): A 0.5% absolute spread gives full 40 points
-  const spreadScore = Math.min(40, (spread / 0.005) * 40);
-
-  // Liquidity (30%): Log scale for volume
-  let liqScore = 0;
-  if (vol > 1e9) liqScore = 30; // > $1B
-  else if (vol > 1e8) liqScore = 20 + ((vol - 1e8) / 9e8) * 10;
-  else if (vol > 1e7) liqScore = 10 + ((vol - 1e7) / 9e7) * 10;
-  else if (vol > 1e6) liqScore = 5;
-
-  // Exchange Quality (15%)
-  const topTier = ['binance', 'bybit', 'okx', 'hyperliquid'];
-  const midTier = ['bitget', 'kucoin', 'gateio'];
-  let exqScore = 0;
-  const scoreEx = (ex: string) => {
-    if (topTier.includes(ex)) return 7.5;
-    if (midTier.includes(ex)) return 5;
-    return 3;
-  };
-  exqScore += scoreEx(longExchange);
-  exqScore += scoreEx(shortExchange);
-
-  // Stability (15%): standard 8h funding is most predictable
-  const stabScore = intervalHours === 8 ? 15 : intervalHours === 4 ? 10 : 5;
-
-  const total = Math.round(spreadScore + liqScore + exqScore + stabScore);
-  return Math.min(100, Math.max(0, total));
-}
-
-function getScoreInfo(score: number) {
-  if (score >= 80) return { label: 'Excellent', color: 'var(--positive)' };
-  if (score >= 60) return { label: 'Good', color: '#60a5fa' };
-  if (score >= 40) return { label: 'Moderate', color: 'var(--warning)' };
-  return { label: 'Poor', color: 'var(--negative)' };
 }
 
 export default function TradePage() {
@@ -204,15 +163,10 @@ export default function TradePage() {
   const estimatedProfitMonthly = estimatedProfitDaily * 30;
   const estimatedProfitYearly = estimatedProfitDaily * 365;
 
-  // 8h Equivalent Profit (Daily / 3) to represent a standard "Event"
-  const estimatedProfitPerFunding = estimatedProfitDaily / 3;
-
-  const scoreSpread = aprDaily / 100 / 3; // 8h equivalent absolute spread
   const avgInterval = (shortInterval + longInterval) / 2;
-  const oppScore = coinData 
-    ? calculateOpportunityScore(scoreSpread, coinData.volume24h, longExchange, shortExchange, avgInterval)
-    : 0;
-  const scoreInfo = getScoreInfo(oppScore);
+  // FIX H-2: Don't hardcode /3. Events per day = 24 / avgInterval (e.g. 24 for 1h, 6 for 4h, 3 for 8h)
+  const fundingEventsPerDay = 24 / (avgInterval || 8);
+  const estimatedProfitPerFunding = estimatedProfitDaily / fundingEventsPerDay;
 
   const availableExchanges = coinData 
     ? Object.entries(EXCHANGE_LABELS)
@@ -289,30 +243,6 @@ export default function TradePage() {
           </h1>
           <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
             Perpetual Futures · Arbitrage Analysis
-          </div>
-        </div>
-        
-        {/* Opportunity Score Badge */}
-        <div style={{
-          background: 'var(--bg-card)',
-          border: '1px solid var(--border)',
-          borderRadius: 12, padding: '10px 16px',
-          display: 'flex', alignItems: 'center', gap: 16,
-          boxShadow: 'var(--shadow-card)'
-        }}>
-          <div>
-            <div style={{ fontSize: '0.7rem', textTransform: 'uppercase', color: 'var(--text-muted)', fontWeight: 700, letterSpacing: '0.05em' }}>Opp. Score</div>
-            <div style={{ fontSize: '1.4rem', fontWeight: 800, color: scoreInfo.color, lineHeight: 1.1 }}>
-              {oppScore}<span style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>/100</span>
-            </div>
-          </div>
-          <div style={{ 
-            padding: '4px 10px', borderRadius: 20, 
-            background: scoreInfo.color + '15', 
-            color: scoreInfo.color, 
-            fontSize: '0.75rem', fontWeight: 700 
-          }}>
-            {scoreInfo.label}
           </div>
         </div>
       </div>
@@ -572,6 +502,17 @@ export default function TradePage() {
 
       <HistoricalCharts symbol={coinData.symbol} baseAsset={coinData.baseAsset} />
 
+      <OpportunityAnalysis 
+        symbol={coinData.symbol}
+        baseAsset={coinData.baseAsset}
+        liveSpread={spread}
+        positionSize={positionSize}
+        volume24h={coinData.volume24h}
+        longExchange={longExchange}
+        shortExchange={shortExchange}
+        avgIntervalHours={avgInterval}
+      />
+
       {/* Execution Action */}
       <div style={{
         background: 'linear-gradient(180deg, rgba(59,130,246,0.1) 0%, rgba(59,130,246,0.02) 100%)',
@@ -583,22 +524,37 @@ export default function TradePage() {
         <p style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', maxWidth: 600, margin: '0 auto 24px', lineHeight: 1.5 }}>
           This will open both <strong style={{ color: 'var(--positive)' }}>{EXCHANGE_LABELS[longExchange]}</strong> and <strong style={{ color: 'var(--negative)' }}>{EXCHANGE_LABELS[shortExchange]}</strong> in new tabs so you can place your long and short positions manually.
         </p>
-        <button
-          onClick={() => {
-            window.open(EXCHANGE_URLS[longExchange]?.(baseAsset), '_blank');
-            setTimeout(() => {
-              window.open(EXCHANGE_URLS[shortExchange]?.(baseAsset), '_blank');
-            }, 500);
-          }}
-          className="btn btn-primary"
-          style={{
-            padding: '16px 32px', fontSize: '1.1rem', fontWeight: 700, 
-            boxShadow: '0 0 30px rgba(59,130,246,0.4)', border: 'none', cursor: 'pointer', color: 'white', borderRadius: 8
-          }}
-        >
-          <Zap size={20} style={{ display: 'inline-block', marginRight: 8, verticalAlign: 'text-bottom' }}/>
-          Open Both Exchanges
-        </button>
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 16, marginTop: 16, flexWrap: 'wrap' }}>
+          <button
+            onClick={() => {
+              window.open(EXCHANGE_URLS[longExchange]?.(baseAsset), '_blank');
+              setTimeout(() => {
+                window.open(EXCHANGE_URLS[shortExchange]?.(baseAsset), '_blank');
+              }, 500);
+            }}
+            className="btn btn-primary"
+            style={{
+              padding: '16px 32px', fontSize: '1.1rem', fontWeight: 700, 
+              boxShadow: '0 0 30px rgba(59,130,246,0.4)', border: 'none', cursor: 'pointer', color: 'white', borderRadius: 8
+            }}
+          >
+            <Zap size={20} style={{ display: 'inline-block', marginRight: 8, verticalAlign: 'text-bottom' }}/>
+            Open Both Exchanges
+          </button>
+          
+          <Link href={`/paper-trading?symbol=${encodeURIComponent(coinData.symbol)}&long=${longExchange}&short=${shortExchange}`} passHref>
+            <button
+              className="btn btn-ghost"
+              style={{
+                padding: '16px 32px', fontSize: '1.1rem', fontWeight: 700, 
+                border: '1px solid var(--border)', cursor: 'pointer', borderRadius: 8,
+                background: 'rgba(255,255,255,0.05)', color: 'var(--text-primary)'
+              }}
+            >
+              Paper Trade
+            </button>
+          </Link>
+        </div>
         <div style={{ marginTop: 20, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
           ⚠️ Always verify prices and funding rates on the exchange before executing. Not financial advice.
         </div>

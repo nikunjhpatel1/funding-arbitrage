@@ -7,6 +7,7 @@ import { TrendingUp, Bell, Settings } from 'lucide-react';
 const NAV_LINKS = [
   { href: '/',          label: 'Dashboard' },
   { href: '/markets',   label: 'Markets'   },
+  { href: '/paper-trading', label: 'Paper Trading' },
   { href: '/positions', label: 'Positions' },
   { href: '/alerts',    label: 'Alerts'    },
 ];

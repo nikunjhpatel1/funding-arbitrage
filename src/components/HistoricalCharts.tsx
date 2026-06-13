@@ -119,7 +119,7 @@ export default function HistoricalCharts({ symbol }: HistoricalChartsProps) {
           <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 64, height: 64, borderRadius: '50%', background: 'rgba(59,130,246,0.1)', color: '#60a5fa', marginBottom: 24, position: 'relative', zIndex: 2 }}>
             <CalendarClock size={32} />
           </div>
-          <h3 style={{ fontSize: '1.4rem', fontWeight: 700, margin: '0 0 12px 0', position: 'relative', zIndex: 2 }}>Historical Data Collection Starting</h3>
+          <h3 style={{ fontSize: '1.4rem', fontWeight: 700, margin: '0 0 12px 0', position: 'relative', zIndex: 2 }}>Historical data is still being collected.</h3>
           <p style={{ color: 'var(--text-muted)', maxWidth: 500, margin: '0 auto 32px', lineHeight: 1.5, position: 'relative', zIndex: 2 }}>
             We have just initialized the time-series database architecture. Historical funding rate tracking for <strong style={{ color: 'var(--text-primary)' }}>{symbol}</strong> is now active. Check back soon for detailed 7D, 30D, and 1Y charts!
           </p>
@@ -198,6 +198,10 @@ export default function HistoricalCharts({ symbol }: HistoricalChartsProps) {
             <div className="stat-card" style={{ padding: '1.2rem', background: 'var(--bg-card)', borderRadius: 12, border: '1px solid var(--border)', textAlign: 'center' }}>
               <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', fontWeight: 600, marginBottom: 8, textTransform: 'uppercase' }}>Lowest Funding</div>
               <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--negative)', fontFamily: 'monospace' }}>{(lowest * 100).toFixed(4)}%</div>
+            </div>
+            <div className="stat-card" style={{ padding: '1.2rem', background: 'var(--bg-card)', borderRadius: 12, border: '1px solid var(--border)', textAlign: 'center' }}>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', fontWeight: 600, marginBottom: 8, textTransform: 'uppercase' }}>Total Samples</div>
+              <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--accent-blue)', fontFamily: 'monospace' }}>{count}</div>
             </div>
           </div>
         );
