@@ -28,7 +28,64 @@ const BLOFIN_FUND_RATE = (b: string) => `https://openapi.blofin.com/api/v1/marke
 
 // Per-exchange HTTP timeout: longer in dev (Windows DNS serialization overhead),
 // tight in production to stay within Vercel Hobby's 10 s serverless limit.
-const FETCH_TIMEOUT_MS = process.env.NODE_ENV === 'development' ? 12_000 : 4_000;
+const FETCH_TIMEOUT_MS = 8_000;
+
+// ─── Caching & Rate Limiting ──────────────────────────────────────────────
+const EXCHANGE_REFRESH_MS: Record<string, number> = {
+  binance:     60_000,
+  bybit:       60_000,
+  okx:         120_000,
+  bitget:      120_000,
+  kucoin:      120_000,
+  gateio:      120_000,
+  mexc:        180_000,
+  bingx:       180_000,
+  htx:         180_000,
+  bitmex:      300_000,
+  dydx:        60_000,
+  hyperliquid: 60_000,
+  phemex:      180_000,
+  blofin:      300_000,
+  delta:       300_000,
+};
+
+const lastFetchTime: Record<string, number> = {};
+const exchangeCache: Record<string, any> = {};
+const CACHE_STALE_MS = 600_000;
+
+function shouldFetch(exchange: string): boolean {
+  const now = Date.now();
+  const lastFetch = lastFetchTime[exchange] ?? 0;
+  const interval = EXCHANGE_REFRESH_MS[exchange] ?? 120_000;
+  return (now - lastFetch) >= interval;
+}
+
+function markFetched(exchange: string): void {
+  lastFetchTime[exchange] = Date.now();
+}
+
+function getCachedOrFetch<T extends { ok: boolean }>(
+  exchange: string,
+  fetchFn: () => Promise<T>
+): Promise<T & { fromCache?: boolean }> {
+  if (!shouldFetch(exchange)) {
+    const cached = exchangeCache[exchange];
+    if (cached) return Promise.resolve({ ...cached, fromCache: true });
+  }
+  
+  return fetchFn().then(result => {
+    if (result.ok) {
+      exchangeCache[exchange] = { ...result, timestamp: Date.now() };
+      markFetched(exchange);
+    } else {
+      const cached = exchangeCache[exchange];
+      if (cached && Date.now() - cached.timestamp < CACHE_STALE_MS) {
+        return { ...cached, fromCache: true };
+      }
+    }
+    return result;
+  });
+}
 
 // ─── Exported types ───────────────────────────────────────────────────────────
 export interface FundingRateEntry {
@@ -59,8 +116,9 @@ export interface FundingRateEntry {
   phemex: number | null;
   blofin: number | null;
   delta: number | null;
-  // ─────────────────────────────────────────────────────────────────────────
   exchangeIntervals: Record<string, number>;
+  exchangePrices: Record<string, number>;
+  exchangeNextFunding: Record<string, string>;
   maxSpread: number;
   opportunity: 'hot' | 'mild' | 'low';
   nextFunding: string;
@@ -70,7 +128,7 @@ export interface FundingRateEntry {
 export interface ApiResponse {
   data: FundingRateEntry[];
   updatedAt: string;
-  exchangeStatus: Record<string, 'ok' | 'error'>;
+  exchangeStatus: Record<string, 'ok' | 'stale' | 'error'>;
 }
 
 // ─── Logo colours for well-known tokens ──────────────────────────────────────
@@ -113,14 +171,50 @@ function opportunityLevel(spread: number): 'hot' | 'mild' | 'low' {
   return 'low';
 }
 
-async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+const DEFAULT_HEADERS = {
+  'Accept': 'application/json',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Cache-Control': 'no-cache',
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+};
+
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit = {},
+  retries: number = 2,
+  backoffMs: number = 1000
+): Promise<Response> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  
   try {
-    return await fetch(url, { ...options, signal: ctrl.signal, cache: 'no-store' });
-  } finally {
+    const res = await fetch(url, {
+      ...options,
+      headers: { ...DEFAULT_HEADERS, ...(options.headers ?? {}) },
+      signal: ctrl.signal,
+      cache: 'no-store'
+    });
     clearTimeout(timer);
+    
+    if (res.status === 429 && retries > 0) {
+      const retryAfter = parseInt(res.headers.get('Retry-After') ?? '5') * 1000;
+      await new Promise(r => setTimeout(r, Math.max(retryAfter, backoffMs)));
+      return fetchWithRetry(url, options, retries - 1, backoffMs * 2);
+    }
+    
+    return res;
+  } catch (e) {
+    clearTimeout(timer);
+    if (retries > 0 && !(e instanceof Error && e.name === 'AbortError')) {
+      await new Promise(r => setTimeout(r, backoffMs));
+      return fetchWithRetry(url, options, retries - 1, backoffMs * 2);
+    }
+    throw e;
   }
+}
+
+async function fetchWithTimeout(url: string, options: RequestInit = {}): Promise<Response> {
+  return fetchWithRetry(url, options);
 }
 
 // ─── Internal data shapes ─────────────────────────────────────────────────────
@@ -507,10 +601,13 @@ async function fetchHyperliquid(): Promise<FetchResult<SimpleRateData>> {
  * OKX USDT-margined Swaps
  * Field: fundingRate from /api/v5/public/funding-rate
  */
-async function fetchOKX(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
+async function fetchOKX(bases: Iterable<string>, deadline: number): Promise<FetchResult<SimpleRateData>> {
+  const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+    if (Date.now() > deadline) return;
+
     try {
       const res = await fetchWithTimeout(OKX_FUNDING(base));
       if (!res.ok) return;
@@ -530,10 +627,13 @@ async function fetchOKX(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>
  * Bitget USDT Futures
  * Field: fundingRate from /api/v2/mix/market/current-fund-rate
  */
-async function fetchBitget(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
+async function fetchBitget(bases: Iterable<string>, deadline: number): Promise<FetchResult<SimpleRateData>> {
+  const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+    if (Date.now() > deadline) return;
+
     try {
       const res = await fetchWithTimeout(BITGET_FUND_RATE(base));
       if (!res.ok) return;
@@ -559,10 +659,13 @@ async function fetchBitget(bases: Iterable<string>, limit: <T>(fn: () => Promise
  * MEXC Contract
  * Field: fundingRate from /api/v1/contract/funding_rate/{symbol}
  */
-async function fetchMEXC(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
+async function fetchMEXC(bases: Iterable<string>, deadline: number): Promise<FetchResult<SimpleRateData>> {
+  const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+    if (Date.now() > deadline) return;
+
     try {
       const res = await fetchWithTimeout(MEXC_FUND_RATE(base));
       if (!res.ok) return;
@@ -588,12 +691,15 @@ async function fetchMEXC(bases: Iterable<string>, limit: <T>(fn: () => Promise<T
  * KuCoin Futures
  * Field: fundingRate (→ value → predictedValue) from /api/v1/funding-rate/{symbol}/current
  */
-async function fetchKuCoin(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
+async function fetchKuCoin(bases: Iterable<string>, deadline: number): Promise<FetchResult<SimpleRateData>> {
+  const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
   const kuCoinSym = (b: string) => b === 'BTC' ? 'XBTUSDTM' : `${b}USDTM`;
 
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+    if (Date.now() > deadline) return;
+
     try {
       const res = await fetchWithTimeout(KUCOIN_FUND_RATE(kuCoinSym(base)));
       if (!res.ok) return;
@@ -619,10 +725,13 @@ async function fetchKuCoin(bases: Iterable<string>, limit: <T>(fn: () => Promise
  * BingX USDT Perpetual
  * Field: fundingRate (→ lastFundingRate) from /openApi/swap/v2/quote/fundingRate
  */
-async function fetchBingX(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
+async function fetchBingX(bases: Iterable<string>, deadline: number): Promise<FetchResult<SimpleRateData>> {
+  const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+    if (Date.now() > deadline) return;
+
     try {
       const res = await fetchWithTimeout(BINGX_FUND_RATE(base));
       if (!res.ok) return;
@@ -648,10 +757,13 @@ async function fetchBingX(bases: Iterable<string>, limit: <T>(fn: () => Promise<
  * HTX (Huobi) Coin-margined Perpetual Swaps
  * Field: funding_rate from /swap-api/v1/swap_funding_rate?contract_code={BASE}-USD
  */
-async function fetchHTX(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
+async function fetchHTX(bases: Iterable<string>, deadline: number): Promise<FetchResult<SimpleRateData>> {
+  const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+    if (Date.now() > deadline) return;
+
     try {
       const res = await fetchWithTimeout(HTX_FUND_RATE(base));
       if (!res.ok) return;
@@ -677,10 +789,13 @@ async function fetchHTX(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>
  * BloFin
  * Field: fundingRate from /api/v1/market/funding-rate?instId={BASE}-USDT
  */
-async function fetchBloFin(bases: Iterable<string>, limit: <T>(fn: () => Promise<T>) => Promise<T>): Promise<FetchResult<SimpleRateData>> {
+async function fetchBloFin(bases: Iterable<string>, deadline: number): Promise<FetchResult<SimpleRateData>> {
+  const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+    if (Date.now() > deadline) return;
+
     try {
       const res = await fetchWithTimeout(BLOFIN_FUND_RATE(base));
       if (!res.ok) return;
@@ -749,24 +864,40 @@ function pLimit(concurrency: number) {
 // In production we must finish within Vercel Hobby's 10 s function limit.
 // In development there's no such constraint, so we use generous timeouts.
 
-let globalCache: ApiResponse | null = null;
-let lastFetchTime = 0;
+let oldGlobalCache: ApiResponse | null = null;
+let globalLastFetchTime = 0;
 let isFetching = false;
 
 async function performFetch(budgetMs: number): Promise<ApiResponse> {
   const START = Date.now();
-  const phase1Ms = Math.min(budgetMs * 0.6, 7000);
+  const deadlineMs = Math.min(budgetMs * 0.9, 7000); // give it up to 7 seconds or 90% of budget
 
-  // ── Phase 1: all batch exchanges fire concurrently ───────────
-  const [binance, bybit, gateio, bitmex, phemex, delta, dydx, hyperliquid] = await Promise.all([
-    withDeadline(fetchBinance(), phase1Ms).then(r => r ?? { data: new Map(), intervalMap: new Map(), ok: false }),
-    withDeadline(fetchBybit(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchGateio(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchBitMEX(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchPhemex(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchDelta(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchDydx(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchHyperliquid(), phase1Ms).then(r => r ?? { data: new Map(), ok: false }),
+  // ── ALL EXCHANGES FIRE CONCURRENTLY ───────────
+  // We use TOP_BASES for the per-symbol exchanges so they don't wait for batch ones to finish.
+  const phase2Bases = TOP_BASES;
+  const deadline = Date.now() + deadlineMs;
+
+  const [
+    binance, bybit, gateio, bitmex, phemex, delta, dydx, hyperliquid,
+    okx, bitget, mexc, kucoin, bingx, htx, blofin
+  ] = await Promise.all([
+    // Batch
+    withDeadline(getCachedOrFetch('binance', () => fetchBinance()), deadlineMs).then(r => r ?? { data: new Map(), intervalMap: new Map(), ok: false }),
+    withDeadline(getCachedOrFetch('bybit', () => fetchBybit()), deadlineMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(getCachedOrFetch('gateio', () => fetchGateio()), deadlineMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(getCachedOrFetch('bitmex', () => fetchBitMEX()), deadlineMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(getCachedOrFetch('phemex', () => fetchPhemex()), deadlineMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(getCachedOrFetch('delta', () => fetchDelta()), deadlineMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(getCachedOrFetch('dydx', () => fetchDydx()), deadlineMs).then(r => r ?? { data: new Map(), ok: false }),
+    withDeadline(getCachedOrFetch('hyperliquid', () => fetchHyperliquid()), deadlineMs).then(r => r ?? { data: new Map(), ok: false }),
+    // Per-symbol
+    getCachedOrFetch('okx', () => fetchOKX(phase2Bases, deadline)),
+    getCachedOrFetch('bitget', () => fetchBitget(phase2Bases, deadline)),
+    getCachedOrFetch('mexc', () => fetchMEXC(phase2Bases, deadline)),
+    getCachedOrFetch('kucoin', () => fetchKuCoin(phase2Bases, deadline)),
+    getCachedOrFetch('bingx', () => fetchBingX(phase2Bases, deadline)),
+    getCachedOrFetch('htx', () => fetchHTX(phase2Bases, deadline)),
+    getCachedOrFetch('blofin', () => fetchBloFin(phase2Bases, deadline)),
   ]);
 
   // Build the master base set from all batch results
@@ -780,22 +911,6 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
   for (const [b] of dydx.data) allBases.add(b);
   for (const [b] of hyperliquid.data) allBases.add(b);
 
-  // ── Phase 2: per-symbol exchanges, top coins only, within remaining budget ──
-  // We limit to TOP_BASES to avoid 400+ outbound requests.
-  const phase2Bases = new Set([...allBases].filter((b) => TOP_BASES.has(b)));
-  const remainingMs = Math.max(0, budgetMs - (Date.now() - START) - 200);
-
-  const limit = pLimit(15);
-  const [okx, bitget, mexc, kucoin, bingx, htx, blofin] = await Promise.all([
-    withDeadline(fetchOKX(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchBitget(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchMEXC(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchKuCoin(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchBingX(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchHTX(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
-    withDeadline(fetchBloFin(phase2Bases, limit), remainingMs).then(r => r ?? { data: new Map(), ok: false }),
-  ]);
-
   // Also add any bases discovered by per-symbol exchanges
   for (const [b] of okx.data) allBases.add(b);
   for (const [b] of bitget.data) allBases.add(b);
@@ -804,22 +919,22 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
   for (const [b] of bingx.data) allBases.add(b);
   for (const [b] of blofin.data) allBases.add(b);
 
-  const exchangeStatus: Record<string, 'ok' | 'error'> = {
-    binance: binance.ok ? 'ok' : 'error',
-    bybit: bybit.ok ? 'ok' : 'error',
-    okx: okx.ok ? 'ok' : 'error',
-    bitget: bitget.ok ? 'ok' : 'error',
-    kucoin: kucoin.ok ? 'ok' : 'error',
-    gateio: gateio.ok ? 'ok' : 'error',
-    mexc: mexc.ok ? 'ok' : 'error',
-    bingx: bingx.ok ? 'ok' : 'error',
-    htx: htx.ok ? 'ok' : 'error',
-    bitmex: bitmex.ok ? 'ok' : 'error',
-    dydx: dydx.ok ? 'ok' : 'error',
-    hyperliquid: hyperliquid.ok ? 'ok' : 'error',
-    phemex: phemex.ok ? 'ok' : 'error',
-    blofin: blofin.ok ? 'ok' : 'error',
-    delta: delta.ok ? 'ok' : 'error',
+  const exchangeStatus: Record<string, 'ok' | 'stale' | 'error'> = {
+    binance: binance.ok ? 'ok' : (binance as any).fromCache ? 'stale' : 'error',
+    bybit: bybit.ok ? 'ok' : (bybit as any).fromCache ? 'stale' : 'error',
+    okx: okx.ok ? 'ok' : (okx as any).fromCache ? 'stale' : 'error',
+    bitget: bitget.ok ? 'ok' : (bitget as any).fromCache ? 'stale' : 'error',
+    kucoin: kucoin.ok ? 'ok' : (kucoin as any).fromCache ? 'stale' : 'error',
+    gateio: gateio.ok ? 'ok' : (gateio as any).fromCache ? 'stale' : 'error',
+    mexc: mexc.ok ? 'ok' : (mexc as any).fromCache ? 'stale' : 'error',
+    bingx: bingx.ok ? 'ok' : (bingx as any).fromCache ? 'stale' : 'error',
+    htx: htx.ok ? 'ok' : (htx as any).fromCache ? 'stale' : 'error',
+    bitmex: bitmex.ok ? 'ok' : (bitmex as any).fromCache ? 'stale' : 'error',
+    dydx: dydx.ok ? 'ok' : (dydx as any).fromCache ? 'stale' : 'error',
+    hyperliquid: hyperliquid.ok ? 'ok' : (hyperliquid as any).fromCache ? 'stale' : 'error',
+    phemex: phemex.ok ? 'ok' : (phemex as any).fromCache ? 'stale' : 'error',
+    blofin: blofin.ok ? 'ok' : (blofin as any).fromCache ? 'stale' : 'error',
+    delta: delta.ok ? 'ok' : (delta as any).fromCache ? 'stale' : 'error',
   };
 
   // ── Assemble entries ──────────────────────────────────────────────────────
@@ -944,6 +1059,40 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     if (bfRate === null && blofin.ok) exchangeErrors.push('blofin');
     if (dlRate === null && delta.ok) exchangeErrors.push('delta');
 
+    const exchangePrices: Record<string, number> = {};
+    if (binRate !== null) exchangePrices.binance = binD?.price ?? price;
+    if (byRate !== null) exchangePrices.bybit = (byD as any)?.price ?? price;
+    if (okRate !== null) exchangePrices.okx = (okD as any)?.price ?? price;
+    if (bgRate !== null) exchangePrices.bitget = (bgD as any)?.price ?? price;
+    if (kcRate !== null) exchangePrices.kucoin = (kcD as any)?.price ?? price;
+    if (gtRate !== null) exchangePrices.gateio = (gtD as any)?.price ?? price;
+    if (mxRate !== null) exchangePrices.mexc = (mxD as any)?.price ?? price;
+    if (bxRate !== null) exchangePrices.bingx = (bxD as any)?.price ?? price;
+    if (hxRate !== null) exchangePrices.htx = (hxD as any)?.price ?? price;
+    if (bmRate !== null) exchangePrices.bitmex = (bmD as any)?.price ?? price;
+    if (dyRate !== null) exchangePrices.dydx = dyD?.price ?? price;
+    if (hlRate !== null) exchangePrices.hyperliquid = (hlD as any)?.price ?? price;
+    if (pxRate !== null) exchangePrices.phemex = (pxD as any)?.price ?? price;
+    if (bfRate !== null) exchangePrices.blofin = (bfD as any)?.price ?? price;
+    if (dlRate !== null) exchangePrices.delta = (dlD as any)?.price ?? price;
+
+    const exchangeNextFunding: Record<string, string> = {};
+    if (binD?.nextFunding) exchangeNextFunding.binance = binD.nextFunding;
+    if (byD?.nextFunding) exchangeNextFunding.bybit = byD.nextFunding;
+    if (okD?.nextFunding) exchangeNextFunding.okx = okD.nextFunding;
+    if (bgD?.nextFunding) exchangeNextFunding.bitget = bgD.nextFunding;
+    if (kcD?.nextFunding) exchangeNextFunding.kucoin = kcD.nextFunding;
+    if (gtD?.nextFunding) exchangeNextFunding.gateio = gtD.nextFunding;
+    if (mxD?.nextFunding) exchangeNextFunding.mexc = mxD.nextFunding;
+    if (bxD?.nextFunding) exchangeNextFunding.bingx = bxD.nextFunding;
+    if (hxD?.nextFunding) exchangeNextFunding.htx = hxD.nextFunding;
+    if (bmD?.nextFunding) exchangeNextFunding.bitmex = bmD.nextFunding;
+    if (dyD?.nextFunding) exchangeNextFunding.dydx = dyD.nextFunding;
+    if (hlD?.nextFunding) exchangeNextFunding.hyperliquid = hlD.nextFunding;
+    if (pxD?.nextFunding) exchangeNextFunding.phemex = pxD.nextFunding;
+    if (bfD?.nextFunding) exchangeNextFunding.blofin = bfD.nextFunding;
+    if (dlD?.nextFunding) exchangeNextFunding.delta = dlD.nextFunding;
+
     entries.push({
       id: `${base}-USDT`,
       symbol: `${base}/USDT`,
@@ -971,6 +1120,8 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
       blofin: bfRate,
       delta: dlRate,
       exchangeIntervals,
+      exchangePrices,
+      exchangeNextFunding,
       maxSpread,
       opportunity: opportunityLevel(maxSpread),
       nextFunding,
@@ -987,51 +1138,68 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
 export async function GET() {
   const now = Date.now();
   
-  if (globalCache && now - lastFetchTime < 15_000) {
-    return NextResponse.json(globalCache, {
+  if (process.env.NODE_ENV === 'development') {
+    const data = await performFetch(28_000); // 5.5s budget
+    saveHistoricalData(data.data);
+    return NextResponse.json(data, {
       headers: {
-        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET',
+      }
+    });
+  }
+  
+  if (oldGlobalCache && now - globalLastFetchTime < 15_000) {
+    return NextResponse.json(oldGlobalCache, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET',
       }
     });
   }
 
-  if (globalCache && isFetching) {
-    return NextResponse.json(globalCache, {
+  if (oldGlobalCache && isFetching) {
+    return NextResponse.json(oldGlobalCache, {
       headers: {
-        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET',
       }
     });
   }
 
-  if (!globalCache) {
+  if (!oldGlobalCache) {
     isFetching = true;
     try {
       // Very strict initial budget to hit < 5s load time (4.5s max)
-      globalCache = await performFetch(4500);
-      lastFetchTime = Date.now();
-      saveHistoricalData(globalCache.data);
+      oldGlobalCache = await performFetch(28_000);
+      globalLastFetchTime = Date.now();
+      saveHistoricalData(oldGlobalCache.data);
+      updatePaperPositions(oldGlobalCache.data);
     } finally {
       isFetching = false;
     }
     
     // Background refresh for remaining exchanges 
-    if (globalCache) {
+    if (oldGlobalCache) {
       isFetching = true;
-      performFetch(15_000).then((data) => {
-        globalCache = data;
-        lastFetchTime = Date.now();
+      performFetch(28_000).then((data) => {
+        oldGlobalCache = data;
+        globalLastFetchTime = Date.now();
       }).catch((e) => console.error('Background refresh failed', e)).finally(() => {
         isFetching = false;
       });
     }
 
-    return NextResponse.json(globalCache, {
+    return NextResponse.json(oldGlobalCache, {
       headers: {
-        'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
         'Access-Control-Allow-Origin': '*',
         'Access-Control-Allow-Methods': 'GET',
       }
@@ -1040,17 +1208,19 @@ export async function GET() {
 
   // Stale cache, start background refresh
   isFetching = true;
-  performFetch(15_000).then((data) => {
-    globalCache = data;
-    lastFetchTime = Date.now();
+  performFetch(28_000).then((data) => {
+    oldGlobalCache = data;
+    globalLastFetchTime = Date.now();
     saveHistoricalData(data.data);
+    updatePaperPositions(data.data);
   }).catch((e) => console.error('Background refresh failed', e)).finally(() => {
     isFetching = false;
   });
 
-  return NextResponse.json(globalCache, {
+  return NextResponse.json(oldGlobalCache, {
     headers: {
-      'Cache-Control': 'public, s-maxage=15, stale-while-revalidate=30',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        'Pragma': 'no-cache',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET',
     }
@@ -1114,6 +1284,98 @@ function saveHistoricalData(entries: FundingRateEntry[]) {
     insertMany(rows);
   } catch (e) {
     console.error('[SQLite] Failed to save historical data', e);
+  }
+}
+
+// ─── Paper Trading Accrual Engine ───────────────────────────────────────────
+function updatePaperPositions(rates: FundingRateEntry[]) {
+  try {
+    const positions = db.prepare(`SELECT * FROM paper_positions WHERE status = 'OPEN'`).all() as any[];
+    console.log('[Paper Trading] Running accrual for', positions.length, 'positions');
+    
+    if (positions.length === 0) return;
+    
+    const now = Date.now();
+    const updateStmt = db.prepare(`
+      UPDATE paper_positions 
+      SET long_funding_received = long_funding_received + ?,
+          long_funding_paid = long_funding_paid + ?,
+          long_funding = long_funding_received - long_funding_paid,
+          short_funding_received = short_funding_received + ?,
+          short_funding_paid = short_funding_paid + ?,
+          short_funding = short_funding_received - short_funding_paid,
+          funding_events_count = funding_events_count + ?,
+          last_funding_accrual_time = ?
+      WHERE id = ?
+    `);
+
+    db.transaction((posList: any[]) => {
+      for (const pos of posList) {
+        const rateData = rates.find(r => r.symbol === pos.symbol);
+        if (!rateData) continue;
+
+        const longRate = rateData[pos.long_exchange as keyof FundingRateEntry] as number | null;
+        const shortRate = rateData[pos.short_exchange as keyof FundingRateEntry] as number | null;
+
+        console.log(
+          '[Funding]', pos.symbol,
+          'longRate:', longRate,
+          'shortRate:', shortRate,
+          'longNext:', pos.long_next_funding_time,
+          'now:', now
+        );
+
+        // Emergency fallback requested by user: 
+        // If position has been open > 1 hour with NO funding, force accrue based on elapsed hours.
+        const oneHourMs = 3600_000;
+        const positionAge = now - pos.entry_time;
+        const noFundingReceived = (pos.long_funding_received === 0 && pos.long_funding_paid === 0 && pos.short_funding_received === 0 && pos.short_funding_paid === 0);
+
+        if (positionAge > oneHourMs && noFundingReceived) {
+          const elapsedHours = positionAge / 3600_000;
+          
+          const longInterval = pos.long_funding_interval_hours ?? 8;
+          const longIntervals = Math.floor(elapsedHours / longInterval);
+          
+          const shortInterval = pos.short_funding_interval_hours ?? 8;
+          const shortIntervals = Math.floor(elapsedHours / shortInterval);
+
+          if (longIntervals > 0 || shortIntervals > 0) {
+            let longRcv = 0, longPaid = 0;
+            let shortRcv = 0, shortPaid = 0;
+            
+            const longNotional = pos.notional_per_leg;
+            const shortNotional = pos.notional_per_leg;
+            
+            // If rate > 0, longs pay shorts
+            if (longRate != null && longIntervals > 0) {
+              const amt = Math.abs(longRate) * longNotional * longIntervals;
+              if (longRate > 0) longPaid += amt; else longRcv += amt;
+            }
+            if (shortRate != null && shortIntervals > 0) {
+              const amt = Math.abs(shortRate) * shortNotional * shortIntervals;
+              // If rate > 0, shorts receive from longs
+              if (shortRate > 0) shortRcv += amt; else shortPaid += amt;
+            }
+            
+            const totalIntervals = Math.max(longIntervals, shortIntervals);
+            
+            console.log(
+              '[Emergency Funding]', 
+              pos.symbol, 
+              'intervals:', totalIntervals,
+              'longRcv:', longRcv, 'longPaid:', longPaid,
+              'shortRcv:', shortRcv, 'shortPaid:', shortPaid
+            );
+
+            updateStmt.run(longRcv, longPaid, shortRcv, shortPaid, totalIntervals, now, pos.id);
+          }
+        }
+      }
+    })(positions);
+    
+  } catch (e) {
+    console.error('[Paper Trading] Accrual engine error', e);
   }
 }
 

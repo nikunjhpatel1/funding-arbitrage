@@ -36,12 +36,14 @@ interface FundingRateEntry {
   nextFunding: string;
   exchangeErrors: string[];
   exchangeIntervals: Record<string, number>;
+  exchangePrices: Record<string, number>;
+  exchangeNextFundingTimes?: Record<string, string | undefined>;
 }
 
 interface ApiResponse {
   data: FundingRateEntry[];
   updatedAt: string;
-  exchangeStatus: Record<string, 'ok' | 'error'>;
+  exchangeStatus: Record<string, 'ok' | 'stale' | 'error'>;
 }
 
 const EXCHANGE_LABELS: Record<string, string> = {
@@ -59,6 +61,7 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [enrichedData, setEnrichedData] = useState<EnrichedRow[]>([]);
   const [mounted, setMounted] = useState(false);
+  const [positionSize, setPositionSize] = useState<number>(1000);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -104,9 +107,13 @@ export default function HomePage() {
   }, [mounted, fetchData]);
 
   useEffect(() => {
-    const id = setInterval(fetchData, 60000);
+    const id = setInterval(fetchData, 300_000);
     return () => clearInterval(id);
   }, [fetchData]);
+
+  // DO NOT add any other setInterval for now
+  // The price refresh can be added later
+  // once the main data loads correctly
 
   return (
     <>
@@ -129,20 +136,39 @@ export default function HomePage() {
         </p>
       </section>
 
-      <div className="exchange-status-bar animate-fade-up">
-        {Object.entries(EXCHANGE_LABELS).map(([key, label]) => {
-          const status = apiData?.exchangeStatus?.[key];
-          return (
-            <div key={key} className={`exchange-status-chip ${
-              status === 'error' ? 'error' : status === 'ok' ? 'ok' : 'loading'
-            }`}>
-              {status === 'ok' ? <CheckCircle2 size={11} /> :
-               status === 'error' ? <XCircle size={11} /> :
-               <Loader2 size={11} className="spin" />}
-              {label}
-            </div>
-          );
-        })}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
+        <div className="exchange-status-bar" style={{ marginBottom: 0 }}>
+          {Object.entries(EXCHANGE_LABELS).map(([key, label]) => {
+            const status = apiData?.exchangeStatus?.[key];
+            return (
+              <div key={key} className={`exchange-status-chip ${
+                status === 'error' ? 'error' : status === 'stale' ? 'stale' : status === 'ok' ? 'ok' : 'loading'
+              }`}>
+                {status === 'ok' ? <CheckCircle2 size={11} /> :
+                 status === 'stale' ? <AlertTriangle size={11} /> :
+                 status === 'error' ? <XCircle size={11} /> :
+                 <Loader2 size={11} className="spin" />}
+                {label}
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-card)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+          <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Est. Position Size:</span>
+          <select 
+            value={positionSize} 
+            onChange={e => setPositionSize(Number(e.target.value))}
+            style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', fontWeight: 600, cursor: 'pointer' }}
+          >
+            <option value="100">$100</option>
+            <option value="500">$500</option>
+            <option value="1000">$1,000</option>
+            <option value="5000">$5,000</option>
+            <option value="10000">$10,000</option>
+            <option value="25000">$25,000</option>
+          </select>
+        </div>
       </div>
 
       {apiData && enrichedData.length > 0 && <StatsGrid data={enrichedData} />}
@@ -177,7 +203,7 @@ export default function HomePage() {
             style={{ color: 'var(--accent-blue)' }} />
           Fetching live rates from 15 exchanges…
           <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>
-            (may take up to 30 seconds)
+            (may take a few seconds)
           </span>
         </div>
       )}
@@ -190,6 +216,7 @@ export default function HomePage() {
           updatedAt={apiData.updatedAt}
           exchangeStatus={apiData.exchangeStatus}
           onEnrichedDataChange={setEnrichedData}
+          positionSize={positionSize}
         />
       )}
 
@@ -208,6 +235,11 @@ export default function HomePage() {
           background: rgba(16,185,129,0.1);
           color: #10b981;
           border-color: rgba(16,185,129,0.25);
+        }
+        .exchange-status-chip.stale {
+          background: rgba(245,158,11,0.1);
+          color: #f59e0b;
+          border-color: rgba(245,158,11,0.25);
         }
         .exchange-status-chip.error {
           background: rgba(244,63,94,0.1);

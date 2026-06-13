@@ -19,8 +19,8 @@ import {
   Eye,
 } from 'lucide-react';
 import type { FundingRateEntry } from '@/app/api/funding-rates/route';
-
-const AUTO_REFRESH_SEC = 30;
+import SlippageModal from './SlippageModal';
+const AUTO_REFRESH_SEC = 300;
 
 /* ─── Option definitions ─────────────────────────────────────────────────── */
 const PAIR_LIMIT_OPTIONS: { label: string; value: number | null }[] = [
@@ -140,18 +140,67 @@ export type EnrichedRow = FundingRateEntry & {
   computedOpportunity: 'hot' | 'mild' | 'low';
 };
 
-/** Compute 8h-equivalent spread across a specific set of exchange keys */
-function computeSpread(row: FundingRateEntry, keys: string[]): number {
-  const rates = keys
-    .map((k) => {
-      const r = row[k as keyof FundingRateEntry] as number | null;
-      if (r === null) return null;
-      const interval = row.exchangeIntervals?.[k] ?? 8;
-      return r * (8 / interval);
-    })
-    .filter((r): r is number => r !== null);
-  if (rates.length < 2) return 0;
-  return parseFloat((Math.max(...rates) - Math.min(...rates)).toFixed(8));
+const EXCHANGE_INTERVALS: Record<string, number> = {
+  binance:     8, // will be overridden by row data
+  bybit:       8,
+  okx:         8,
+  bitget:      8,
+  kucoin:      8,
+  gateio:      8,
+  mexc:        8,
+  bingx:       8,
+  htx:         8,
+  bitmex:      8,
+  dydx:        1,
+  hyperliquid: 1,
+  phemex:      8,
+  blofin:      8,
+  delta:       8,
+};
+
+function computeSpread(
+  row: FundingRateEntry,
+  keys: string[]
+): number {
+  try {
+    const normalizedRates = keys
+      .map((k) => {
+        const rate = row[k as keyof FundingRateEntry];
+        if (typeof rate !== 'number') return null;
+        
+        // Get interval for this exchange
+        // For Binance use the coin's actual interval
+        let interval = EXCHANGE_INTERVALS[k] ?? 8;
+        if (k === 'binance') {
+          interval = row.fundingIntervalHours ?? 8;
+        }
+        
+        // Normalize to 8h equivalent
+        // Prevent divide by zero
+        if (interval <= 0) interval = 8;
+        return rate * (8 / interval);
+      })
+      .filter((r): r is number => 
+        r !== null && 
+        !isNaN(r) && 
+        isFinite(r)
+      );
+
+    if (normalizedRates.length < 2) return 0;
+    
+    const maxRate = Math.max(...normalizedRates);
+    const minRate = Math.min(...normalizedRates);
+    const spread = maxRate - minRate;
+    
+    // Safety check - spread should never be 
+    // more than 100% (sanity check)
+    if (spread > 1) return 0;
+    if (spread < 0) return 0;
+    
+    return parseFloat(spread.toFixed(8));
+  } catch {
+    return 0;
+  }
 }
 
 /** New opportunity tiers: Hot ≥ 0.5% | Mild ≥ 0.1% | Low < 0.1% */
@@ -166,14 +215,28 @@ interface Props {
   onRefresh: () => void;
   isRefreshing: boolean;
   updatedAt: string;
-  exchangeStatus: Record<string, 'ok' | 'error'>;
+  exchangeStatus: Record<string, 'ok' | 'stale' | 'error'>;
   onEnrichedDataChange?: (data: EnrichedRow[]) => void;
+  positionSize: number;
 }
 
 /* ─── Component ──────────────────────────────────────────────────────────── */
 export default function FundingRateTable({
-  data, onRefresh, isRefreshing, updatedAt, exchangeStatus, onEnrichedDataChange,
+  data, onRefresh, isRefreshing, updatedAt, exchangeStatus, onEnrichedDataChange, positionSize
 }: Props) {
+
+  // Safety check - if data is invalid return empty
+  if (!data || !Array.isArray(data)) {
+    return (
+      <div style={{ 
+        textAlign: 'center', 
+        padding: '3rem',
+        color: 'var(--text-muted)' 
+      }}>
+        No data available. Click Refresh.
+      </div>
+    );
+  }
 
   // ── Filter / sort state ───────────────────────────────────────────────────
   const [sortKey,    setSortKey]   = useState<SortKey>('maxSpread');
@@ -184,6 +247,8 @@ export default function FundingRateTable({
   const [pairLimit,  setPairLimit] = useState<number | null>(50);
   const [minSpread,  setMinSpread] = useState<number>(0);
   const [minVolume,  setMinVolume] = useState<number>(0);
+
+  const [selectedSlippageRow, setSelectedSlippageRow] = useState<EnrichedRow | null>(null);
 
   // ── Exchange selector ─────────────────────────────────────────────────────
   const [visibleExchanges, setVisibleExchanges] = useState<Set<string>>(new Set(DEFAULT_VISIBLE));
@@ -295,13 +360,32 @@ export default function FundingRateTable({
    * Enrich every raw row with client-side spread + opportunity.
    * Recomputes whenever the selected exchange set changes — no server round-trip needed.
    */
-  const enrichedData = useMemo((): EnrichedRow[] =>
-    data.map((row) => {
-      const cs = computeSpread(row, activeExchangeKeys);
-      return { ...row, computedSpread: cs, computedOpportunity: computeOpportunity(cs) };
-    }),
-    [data, activeExchangeKeys],
-  );
+  const enrichedData = useMemo((): EnrichedRow[] => {
+    try {
+      return data.map((row) => {
+        try {
+          const cs = computeSpread(
+            row, activeExchangeKeys
+          );
+          return { 
+            ...row, 
+            computedSpread: isNaN(cs) ? 0 : cs, 
+            computedOpportunity: computeOpportunity(
+              isNaN(cs) ? 0 : cs
+            ),
+          };
+        } catch {
+          return { 
+            ...row, 
+            computedSpread: 0, 
+            computedOpportunity: 'low' as const,
+          };
+        }
+      });
+    } catch {
+      return [];
+    }
+  }, [data, activeExchangeKeys]);
 
   useEffect(() => {
     if (onEnrichedDataChange) onEnrichedDataChange(enrichedData);
@@ -399,9 +483,13 @@ export default function FundingRateTable({
   const totalAfterFilters = useMemo(() => {
     let rows = [...enrichedData];
     if (oppFilter !== 'all') rows = rows.filter((r) => r.computedOpportunity === oppFilter);
+    // FIX H-6: Use same interval filter logic as visibleRows (per-exchange intervals, not row-level fundingIntervalHours)
     if (intervalFilter !== 'all') {
-      rows = rows.filter((r) => 
-        String(r.fundingIntervalHours) === intervalFilter
+      const intervalNum = parseInt(intervalFilter, 10);
+      rows = rows.filter((r) =>
+        activeExchanges.some(ex =>
+          (r.exchangeIntervals?.[ex.key as string] ?? 8) === intervalNum && r[ex.key as keyof FundingRateEntry] !== null
+        )
       );
     }
     if (minSpread > 0)       rows = rows.filter((r) => r.computedSpread >= minSpread);
@@ -412,7 +500,7 @@ export default function FundingRateTable({
         r.symbol.toLowerCase().includes(q) || r.baseAsset.toLowerCase().includes(q));
     }
     return rows.length;
-  }, [enrichedData, oppFilter, intervalFilter, minSpread, minVolume, search]);
+  }, [enrichedData, oppFilter, intervalFilter, minSpread, minVolume, search, activeExchanges]);
 
   // ── Sub-components ────────────────────────────────────────────────────────
   function SortIcon({ k }: { k: SortKey }) {
@@ -749,9 +837,14 @@ export default function FundingRateTable({
                   </span>
                 </th>
 
-                <th className={`right ${sortKey === 'maxSpread' ? 'sorted' : ''}`} onClick={() => handleSort('maxSpread')} style={{ width: '110px', minWidth: '110px' }}>
+                <th 
+                  className={`right ${sortKey === 'maxSpread' ? 'sorted' : ''}`} 
+                  onClick={() => handleSort('maxSpread')} 
+                  style={{ width: '110px', minWidth: '110px' }}
+                  title="Spread normalized to 8h equivalent. Shows estimated net funding profit per 8h period if you go Long on lowest rate exchange and Short on highest rate exchange. Hover individual rate cells for raw rates."
+                >
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
-                    Max Spread <SortIcon k="maxSpread" />
+                    Max Spread ⓘ <SortIcon k="maxSpread" />
                   </span>
                 </th>
                 
@@ -850,6 +943,7 @@ export default function FundingRateTable({
                         virtualRow={virtualRow}
                         measureElement={rowVirtualizer.measureElement}
                         activeExchanges={activeExchanges}
+                        onSlippageClick={() => setSelectedSlippageRow(row)}
                       />
                     );
                   })}
@@ -919,11 +1013,19 @@ export default function FundingRateTable({
           {' '}· Hover a rate for annualised return
         </span>
         <span>
-          Last updated:{' '}
-          <strong style={{ color: 'var(--text-secondary)' }}>{new Date(updatedAt).toLocaleTimeString()}</strong>
-          {' '}· Auto-refreshes every {AUTO_REFRESH_SEC}s
+          Prices updating live · Rates refresh in{' '}
+          <strong style={{ color: 'var(--text-secondary)' }}>{Math.floor(countdown / 60)}:{String(countdown % 60).padStart(2, '0')}</strong>
         </span>
       </div>
+
+      {selectedSlippageRow && (
+        <SlippageModal 
+          row={selectedSlippageRow} 
+          positionSize={positionSize} 
+          onClose={() => setSelectedSlippageRow(null)} 
+          activeExchanges={activeExchanges}
+        />
+      )}
 
       {/* ── Scoped styles ────────────────────────────────────────────────────── */}
       <style>{`
@@ -1128,6 +1230,14 @@ export default function FundingRateTable({
         }
         .table-wrapper.flash { animation: flash-table 0.6s ease-out forwards; }
 
+        @keyframes price-flash {
+          0%   { color: var(--accent-blue); text-shadow: 0 0 8px rgba(59,130,246,0.8); }
+          100% { color: inherit; text-shadow: none; }
+        }
+        .price-updated {
+          animation: price-flash 0.8s ease-out;
+        }
+
         /* ── General ── */
         @keyframes spin { to { transform: rotate(360deg); } }
         .exchange-down { opacity: 0.55; }
@@ -1247,13 +1357,27 @@ const MemoizedRow = memo(({
   row,
   virtualRow,
   measureElement,
-  activeExchanges
+  activeExchanges,
+  onSlippageClick
 }: {
   row: FundingRateEntry & { computedSpread: number, computedOpportunity: 'hot'|'mild'|'low' };
   virtualRow: VirtualItem;
   measureElement: (element: Element | null) => void;
   activeExchanges: typeof ALL_EXCHANGES;
+  onSlippageClick: () => void;
 }) => {
+  const [flashPrice, setFlashPrice] = useState(false);
+  const prevPrice = useRef(row.price);
+
+  useEffect(() => {
+    if (row.price !== prevPrice.current) {
+      prevPrice.current = row.price;
+      setFlashPrice(true);
+      const t = setTimeout(() => setFlashPrice(false), 800);
+      return () => clearTimeout(t);
+    }
+  }, [row.price]);
+
   return (
     <tr 
       key={row.id}
@@ -1278,8 +1402,8 @@ const MemoizedRow = memo(({
       </td>
 
       <td className="right" style={{ paddingLeft: 4 }}>
-        <div className="mono" style={{ 
-          fontSize: '0.875rem', fontWeight: 600 
+        <div className={`mono ${flashPrice ? 'price-updated' : ''}`} style={{ 
+          fontSize: '0.875rem', fontWeight: 600, transition: 'color 0.2s'
         }}>
           {fmtPrice(row.price)}
         </div>
@@ -1316,6 +1440,47 @@ const MemoizedRow = memo(({
             }}
           />
         </div>
+        {(() => {
+          const normalizedRates = activeExchanges
+            .map(ex => {
+              const rate = row[ex.key as keyof FundingRateEntry] as number | null;
+              if (rate === null) return null;
+              const interval = row.exchangeIntervals?.[ex.key as string] ?? 8;
+              return {
+                key: ex.key as string,
+                label: ex.label,
+                rate,
+                normalized: rate * (8 / interval),
+                interval,
+              };
+            })
+            .filter((e): e is NonNullable<typeof e> => e !== null)
+            .sort((a, b) => a.normalized - b.normalized);
+          
+          if (normalizedRates.length < 2) return null;
+          
+          const longEx = normalizedRates[0]; // most negative = go long
+          const shortEx = normalizedRates[normalizedRates.length - 1]; // most positive
+          
+          return (
+            <div style={{ 
+              fontSize: '0.62rem', 
+              color: 'var(--text-muted)',
+              marginTop: 2,
+              display: 'flex',
+              gap: 4,
+              justifyContent: 'flex-end'
+            }}>
+              <span style={{ color: 'var(--positive)' }}>
+                L: {longEx.label}
+              </span>
+              <span>/</span>
+              <span style={{ color: 'var(--negative)' }}>
+                S: {shortEx.label}
+              </span>
+            </div>
+          );
+        })()}
       </td>
 
       <td className="right">
@@ -1343,7 +1508,19 @@ const MemoizedRow = memo(({
       </td>
 
       <td className="right">
-        <OppBadge opp={row.computedOpportunity} />
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-end' }}>
+          <OppBadge opp={row.computedOpportunity} />
+          <button 
+            onClick={onSlippageClick}
+            style={{ 
+              background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.2)', 
+              color: 'var(--accent-blue)', padding: '2px 6px', borderRadius: '4px',
+              fontSize: '0.65rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap'
+            }}
+          >
+            Est. Slippage
+          </button>
+        </div>
       </td>
 
       <td className="right">
@@ -1358,9 +1535,13 @@ const MemoizedRow = memo(({
       {activeExchanges.map((ex) => {
         const rate = row[ex.key as keyof FundingRateEntry] as number | null;
         const intervalHours = row.exchangeIntervals?.[ex.key as string] ?? 8;
-        const tooltipText = rate !== null
-          ? `Annualized: ${annualizedRate(rate, intervalHours)}`
-          : undefined;
+        let tooltipText: string | undefined;
+        if (rate !== null) {
+          const normalizedRate = rate * (8 / intervalHours);
+          const rawPct = (rate * 100).toFixed(4);
+          const normPct = (normalizedRate * 100).toFixed(4);
+          tooltipText = `Raw: ${rate > 0 ? '+' : ''}${rawPct}% per ${intervalHours}h\n8h equiv: ${normalizedRate > 0 ? '+' : ''}${normPct}%\nAnnualized: ${annualizedRate(rate, intervalHours)}`;
+        }
         return (
           <td
             key={ex.key as string}
