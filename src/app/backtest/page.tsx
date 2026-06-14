@@ -61,8 +61,6 @@ export default function BacktestPage() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg-dark)', color: 'var(--text-primary)', fontFamily: 'Inter, sans-serif' }}>
-      <Navbar />
-
       <main style={{ padding: '2rem', maxWidth: 1400, margin: '0 auto', display: 'grid', gridTemplateColumns: '320px 1fr', gap: '2rem' }}>
         
         {/* Sidebar Inputs */}
