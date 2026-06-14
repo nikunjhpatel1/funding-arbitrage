@@ -118,6 +118,14 @@ addColumnIfMissing('paper_positions', 'funding_events_count', 'INTEGER DEFAULT 0
 addColumnIfMissing('paper_positions', 'long_funding_interval_hours', 'REAL DEFAULT 8');
 addColumnIfMissing('paper_positions', 'short_funding_interval_hours', 'REAL DEFAULT 8');
 
+// Slippage engine updates
+addColumnIfMissing('paper_positions', 'long_mark_price', 'REAL');
+addColumnIfMissing('paper_positions', 'long_fill_price', 'REAL');
+addColumnIfMissing('paper_positions', 'long_slippage', 'REAL');
+addColumnIfMissing('paper_positions', 'short_mark_price', 'REAL');
+addColumnIfMissing('paper_positions', 'short_fill_price', 'REAL');
+addColumnIfMissing('paper_positions', 'short_slippage', 'REAL');
+
 
 // ─── Data Retention Policy ────────────────────────────────────────────────────
 // Keep only the last 90 days of historical funding data.
