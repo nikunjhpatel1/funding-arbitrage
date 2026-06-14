@@ -40,6 +40,12 @@ export async function POST(req: Request) {
       if (!dStr) return 0;
       const parts = dStr.split('-');
       if (parts.length === 3) {
+        // Handle YYYY-MM-DD from <input type="date">
+        if (parts[0].length === 4) {
+          const [yyyy, mm, dd] = parts;
+          return new Date(Number(yyyy), Number(mm) - 1, Number(dd)).getTime();
+        }
+        // Handle DD-MM-YYYY from curl/manual testing
         const [dd, mm, yyyy] = parts;
         return new Date(Number(yyyy), Number(mm) - 1, Number(dd)).getTime();
       }
@@ -48,12 +54,18 @@ export async function POST(req: Request) {
     const startTs = parseDate(startDate);
     const endTs = parseDate(endDate);
 
+    // Format symbol: if user sends 'BTCUSDT' (no slash), convert to 'BTC/USDT'
+    let dbSymbol = symbol;
+    if (!dbSymbol.includes('/') && dbSymbol.endsWith('USDT')) {
+      dbSymbol = dbSymbol.replace(/USDT$/, '/USDT');
+    }
+
     // 1. Fetch historical data
     const rows = db.prepare(`
       SELECT * FROM funding_rate_history 
       WHERE symbol = ? AND recorded_at >= ? AND recorded_at <= ? 
       ORDER BY recorded_at ASC
-    `).all(symbol, startTs, endTs) as any[];
+    `).all(dbSymbol, startTs, endTs) as any[];
 
     if (rows.length === 0) {
       return NextResponse.json({ error: 'No historical data found for this period.' }, { status: 400 });
