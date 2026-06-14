@@ -46,7 +46,8 @@ function fmtRate(r: number | null) {
   return `${r > 0 ? '+' : ''}${pct}%`;
 }
 
-function fmtPrice(p: number) {
+function fmtPrice(p?: number | null) {
+  if (p == null) return '—';
   if (p >= 1000) return `$${p.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
   if (p >= 1) return `$${p.toFixed(4)}`;
   return `$${p.toFixed(6)}`;
@@ -293,7 +294,7 @@ export default function TradePage() {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Current Price</span>
               <span style={{ fontWeight: 600, fontFamily: 'monospace', fontSize: '1rem' }}>
-                {fmtPrice(coinData.price)}
+                {fmtPrice(coinData.exchangePrices?.[longExchange] ?? coinData.price)}
               </span>
             </div>
           </div>
@@ -357,7 +358,7 @@ export default function TradePage() {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Current Price</span>
               <span style={{ fontWeight: 600, fontFamily: 'monospace', fontSize: '1rem' }}>
-                {fmtPrice(coinData.price)}
+                {fmtPrice(coinData.exchangePrices?.[shortExchange] ?? coinData.price)}
               </span>
             </div>
           </div>
