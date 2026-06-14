@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import db from '@/lib/db';
 import crypto from 'crypto';
 import { getExchangePrice } from '@/lib/getExchangePrice';
+import { calculateSlippage } from '@/lib/slippage';
 
 export type PaperPosition = {
   id: string;
@@ -16,6 +17,9 @@ export type PaperPosition = {
   
   long_exchange: string;
   long_entry_price: number;
+  long_mark_price?: number;
+  long_fill_price?: number;
+  long_slippage?: number;
   long_close_price: number | null;
   long_funding: number;          // Net: positive = received, negative = paid
   long_funding_received: number; // Gross received
@@ -28,6 +32,9 @@ export type PaperPosition = {
   
   short_exchange: string;
   short_entry_price: number;
+  short_mark_price?: number;
+  short_fill_price?: number;
+  short_slippage?: number;
   short_close_price: number | null;
   short_funding: number;          // Net: positive = received, negative = paid
   short_funding_received: number; // Gross received
@@ -107,23 +114,52 @@ export async function POST(req: Request) {
     if (isNaN(leverageNum) || leverageNum < MIN_LEVERAGE || leverageNum > MAX_LEVERAGE || !Number.isInteger(leverageNum)) {
       return NextResponse.json({ error: `Leverage must be an integer between ${MIN_LEVERAGE}x and ${MAX_LEVERAGE}x` }, { status: 400 });
     }
-    // Fetch prices from both exchanges in parallel
-    const [longPrice, shortPrice] = await Promise.all([
+    // Fetch prices and orderbooks in parallel
+    const protocol = req.headers.get('x-forwarded-proto') || 'http';
+    const host = req.headers.get('host') || 'localhost:3000';
+    const orderbookUrl = `${protocol}://${host}/api/orderbook?symbol=${encodeURIComponent(symbol)}&exchanges=${longExchange},${shortExchange}`;
+
+    const [longPrice, shortPrice, obRes] = await Promise.all([
       getExchangePrice(longExchange, symbol),
       getExchangePrice(shortExchange, symbol),
+      fetch(orderbookUrl).catch(() => null)
     ]);
 
+    let longOrderbook = null;
+    let shortOrderbook = null;
+    if (obRes && obRes.ok) {
+      const obData = await obRes.json();
+      longOrderbook = obData.data?.[longExchange] || null;
+      shortOrderbook = obData.data?.[shortExchange] || null;
+    }
+
     // Use fetched prices or fallback to API price
-    const actualLongEntry = longPrice ?? longEntryPrice ?? entryPrice ?? 0;
-    const actualShortEntry = shortPrice ?? shortEntryPrice ?? entryPrice ?? 0;
+    const longMarkPrice = longPrice ?? longEntryPrice ?? entryPrice ?? 0;
+    const shortMarkPrice = shortPrice ?? shortEntryPrice ?? entryPrice ?? 0;
+    
+    const notionalPerLeg = capital * leverage;
+
+    // Calculate slippage using the orderbooks
+    const longSlippageResult = calculateSlippage(longOrderbook, 'buy', notionalPerLeg);
+    const shortSlippageResult = calculateSlippage(shortOrderbook, 'sell', notionalPerLeg);
+
+    const longFillPrice = longSlippageResult.fullyFilled && longSlippageResult.averageFillPrice > 0 
+      ? longSlippageResult.averageFillPrice 
+      : longMarkPrice;
+    const longSlippagePct = longSlippageResult.fullyFilled ? longSlippageResult.slippagePercent : null;
+
+    const shortFillPrice = shortSlippageResult.fullyFilled && shortSlippageResult.averageFillPrice > 0 
+      ? shortSlippageResult.averageFillPrice 
+      : shortMarkPrice;
+    const shortSlippagePct = shortSlippageResult.fullyFilled ? shortSlippageResult.slippagePercent : null;
 
     console.log('[Open Position]', {
       symbol,
       longExchange,
       shortExchange,
-      longEntryPrice: actualLongEntry,
-      shortEntryPrice: actualShortEntry,
-      notional: capital * leverage,
+      longEntryPrice: longFillPrice,
+      shortEntryPrice: shortFillPrice,
+      notional: notionalPerLeg,
     });
 
     // Issue 1: Check for duplicates
@@ -146,26 +182,28 @@ export async function POST(req: Request) {
     const entryTime = Date.now();
     
     // Bug 2: Entry fee calculation
-    const notionalPerLeg = capital * leverage;
     const longFee = notionalPerLeg * (TAKER_FEES[longExchange] ?? 0.0005);
     const shortFee = notionalPerLeg * (TAKER_FEES[shortExchange] ?? 0.0005);
-    const slippage = notionalPerLeg * 0.0005; // 0.05% per leg
 
     const stmt = db.prepare(`
       INSERT INTO paper_positions (
         id, symbol, capital, leverage, notional_per_leg,
         entry_time, status, 
         long_exchange, long_entry_price, long_fees, long_next_funding_time, long_funding_interval_hours, long_rate_at_entry,
+        long_mark_price, long_fill_price, long_slippage,
         short_exchange, short_entry_price, short_fees, short_next_funding_time, short_funding_interval_hours, short_rate_at_entry,
+        short_mark_price, short_fill_price, short_slippage,
         last_funding_accrual_time, funding_events_count, long_funding, short_funding
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
       id, symbol, capital, leverage, notionalPerLeg,
       entryTime, 'OPEN',
-      longExchange, actualLongEntry, longFee + slippage, longNextTime || null, longIntervalHours || 8, longRateAtEntry || 0,
-      shortExchange, actualShortEntry, shortFee + slippage, shortNextTime || null, shortIntervalHours || 8, shortRateAtEntry || 0,
+      longExchange, longFillPrice, longFee, longNextTime || null, longIntervalHours || 8, longRateAtEntry || 0,
+      longMarkPrice, longFillPrice, longSlippagePct,
+      shortExchange, shortFillPrice, shortFee, shortNextTime || null, shortIntervalHours || 8, shortRateAtEntry || 0,
+      shortMarkPrice, shortFillPrice, shortSlippagePct,
       entryTime, 0, 0, 0
     );
 
