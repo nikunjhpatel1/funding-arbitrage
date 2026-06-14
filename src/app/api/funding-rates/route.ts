@@ -226,7 +226,7 @@ interface PriceStats {
   nextFunding: string;
 }
 interface BinanceData extends PriceStats { rate: number; }
-interface SimpleRateData { rate: number; nextFunding?: string; }
+interface SimpleRateData { rate: number; nextFunding?: string; price?: number; }
 interface DydxData extends PriceStats { rate: number; }
 
 interface FetchResult<T> { data: Map<string, T>; ok: boolean; }
@@ -316,6 +316,7 @@ async function fetchBybit(): Promise<FetchResult<SimpleRateData>> {
       data.set(base, {
         rate,
         nextFunding: new Date(Number(item.nextFundingTime)).toISOString(),
+        price: Number(item.lastPrice)
       });
     }
     return { data, ok: data.size > 0 };
@@ -347,6 +348,7 @@ async function fetchGateio(): Promise<FetchResult<SimpleRateData>> {
         nextFunding: item.next_funding_time
           ? new Date(item.next_funding_time * 1000).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
+        price: Number(item.last_price || item.mark_price)
       });
     }
     return { data, ok: data.size > 0 };
@@ -380,6 +382,7 @@ async function fetchBitMEX(): Promise<FetchResult<SimpleRateData>> {
         nextFunding: inst.fundingTimestamp
           ? new Date(inst.fundingTimestamp).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
+        price: inst.lastPrice ?? inst.markPrice ?? undefined
       });
     }
     return { data, ok: data.size > 0 };
@@ -1060,21 +1063,21 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     if (dlRate === null && delta.ok) exchangeErrors.push('delta');
 
     const exchangePrices: Record<string, number> = {};
-    if (binRate !== null) exchangePrices.binance = binD?.price ?? price;
-    if (byRate !== null) exchangePrices.bybit = (byD as any)?.price ?? price;
-    if (okRate !== null) exchangePrices.okx = (okD as any)?.price ?? price;
-    if (bgRate !== null) exchangePrices.bitget = (bgD as any)?.price ?? price;
-    if (kcRate !== null) exchangePrices.kucoin = (kcD as any)?.price ?? price;
-    if (gtRate !== null) exchangePrices.gateio = (gtD as any)?.price ?? price;
-    if (mxRate !== null) exchangePrices.mexc = (mxD as any)?.price ?? price;
-    if (bxRate !== null) exchangePrices.bingx = (bxD as any)?.price ?? price;
-    if (hxRate !== null) exchangePrices.htx = (hxD as any)?.price ?? price;
-    if (bmRate !== null) exchangePrices.bitmex = (bmD as any)?.price ?? price;
-    if (dyRate !== null) exchangePrices.dydx = dyD?.price ?? price;
-    if (hlRate !== null) exchangePrices.hyperliquid = (hlD as any)?.price ?? price;
-    if (pxRate !== null) exchangePrices.phemex = (pxD as any)?.price ?? price;
-    if (bfRate !== null) exchangePrices.blofin = (bfD as any)?.price ?? price;
-    if (dlRate !== null) exchangePrices.delta = (dlD as any)?.price ?? price;
+    if (binRate !== null && binD?.price != null) exchangePrices.binance = binD.price;
+    if (byRate !== null && (byD as any)?.price != null) exchangePrices.bybit = (byD as any).price;
+    if (okRate !== null && (okD as any)?.price != null) exchangePrices.okx = (okD as any).price;
+    if (bgRate !== null && (bgD as any)?.price != null) exchangePrices.bitget = (bgD as any).price;
+    if (kcRate !== null && (kcD as any)?.price != null) exchangePrices.kucoin = (kcD as any).price;
+    if (gtRate !== null && (gtD as any)?.price != null) exchangePrices.gateio = (gtD as any).price;
+    if (mxRate !== null && (mxD as any)?.price != null) exchangePrices.mexc = (mxD as any).price;
+    if (bxRate !== null && (bxD as any)?.price != null) exchangePrices.bingx = (bxD as any).price;
+    if (hxRate !== null && (hxD as any)?.price != null) exchangePrices.htx = (hxD as any).price;
+    if (bmRate !== null && (bmD as any)?.price != null) exchangePrices.bitmex = (bmD as any).price;
+    if (dyRate !== null && dyD?.price != null) exchangePrices.dydx = dyD.price;
+    if (hlRate !== null && (hlD as any)?.price != null) exchangePrices.hyperliquid = (hlD as any).price;
+    if (pxRate !== null && (pxD as any)?.price != null) exchangePrices.phemex = (pxD as any).price;
+    if (bfRate !== null && (bfD as any)?.price != null) exchangePrices.blofin = (bfD as any).price;
+    if (dlRate !== null && (dlD as any)?.price != null) exchangePrices.delta = (dlD as any).price;
 
     const exchangeNextFunding: Record<string, string> = {};
     if (binD?.nextFunding) exchangeNextFunding.binance = binD.nextFunding;

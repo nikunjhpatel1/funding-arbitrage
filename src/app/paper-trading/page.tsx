@@ -535,7 +535,7 @@ export default function PaperTradingPage() {
                       <span>Long entry price ({longExchange}):</span>
                       {longMissing
                         ? <span style={{ color: 'var(--negative)', fontWeight: 600 }}>❌ Not listed on {longExchange.toUpperCase()}</span>
-                        : <span style={{ fontFamily: 'monospace', color: 'var(--positive)' }}>{lp != null ? `$${lp.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}` : '—'}</span>
+                        : <span style={{ fontFamily: 'monospace', color: 'var(--positive)' }}>{lp != null ? (lp < 1 ? `$${lp.toFixed(6)}` : `$${lp.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`) : '—'}</span>
                       }
                     </div>
                     {/* Short price row */}
@@ -543,7 +543,7 @@ export default function PaperTradingPage() {
                       <span>Short entry price ({shortExchange}):</span>
                       {shortMissing
                         ? <span style={{ color: 'var(--negative)', fontWeight: 600 }}>❌ Not listed on {shortExchange.toUpperCase()}</span>
-                        : <span style={{ fontFamily: 'monospace', color: 'var(--negative)' }}>{sp != null ? `$${sp.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}` : '—'}</span>
+                        : <span style={{ fontFamily: 'monospace', color: 'var(--negative)' }}>{sp != null ? (sp < 1 ? `$${sp.toFixed(6)}` : `$${sp.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`) : '—'}</span>
                       }
                     </div>
                     {/* Hard block warning */}
@@ -553,13 +553,15 @@ export default function PaperTradingPage() {
                         <span>Cannot open trade: select exchanges that both list <strong>{symbol}</strong> perpetuals.</span>
                       </div>
                     )}
-                    {/* Basis spread — only shown when both prices are exchange-specific */}
-                    {basis != null && basisPct != null && (
-                      <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 4, marginTop: 4 }}>
-                        <span>Basis spread:</span>
-                        <span style={{ fontFamily: 'monospace' }}>${basis.toFixed(4)} ({basisPct >= 0 ? '+' : ''}{basisPct.toFixed(4)}%)</span>
-                      </div>
-                    )}
+                    {/* Basis spread */}
+                    <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 4, marginTop: 4 }}>
+                      <span>Basis spread:</span>
+                      <span style={{ fontFamily: 'monospace' }}>
+                        {basis != null && basisPct != null 
+                          ? `$${Math.abs(basis) < 0.0001 ? basis.toFixed(8) : basis.toFixed(4)} (${basisPct >= 0 ? '+' : ''}{basisPct.toFixed(4)}%)` 
+                          : 'N/A'}
+                      </span>
+                    </div>
                     <div style={{ borderTop: '1px solid var(--border)', margin: '8px 0' }} />
                   </>
                 );
@@ -569,6 +571,27 @@ export default function PaperTradingPage() {
               <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 4 }}>
                 <span>Total Exposure</span>
                 <span style={{ fontFamily: 'monospace' }}>${(capital * leverage * 2).toFixed(2)} (${capital * leverage} per leg)</span>
+              </div>
+              <div style={{ borderTop: '1px solid var(--border)', margin: '8px 0' }} />
+              
+              {/* Estimated Fees */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 4 }}>
+                <span>Long leg fee ({longExchange}):</span>
+                <span style={{ fontFamily: 'monospace' }}>
+                  ${((TAKER_FEES[longExchange] ?? 0) * capital * leverage).toFixed(2)} ({( (TAKER_FEES[longExchange] ?? 0) * 100).toFixed(3)}%)
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 4 }}>
+                <span>Short leg fee ({shortExchange}):</span>
+                <span style={{ fontFamily: 'monospace' }}>
+                  ${((TAKER_FEES[shortExchange] ?? 0) * capital * leverage).toFixed(2)} ({( (TAKER_FEES[shortExchange] ?? 0) * 100).toFixed(3)}%)
+                </span>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-primary)', marginBottom: 4, fontWeight: 600 }}>
+                <span>Total entry cost:</span>
+                <span style={{ fontFamily: 'monospace', color: 'var(--negative)' }}>
+                  ${((TAKER_FEES[longExchange] ?? 0) * capital * leverage + (TAKER_FEES[shortExchange] ?? 0) * capital * leverage).toFixed(2)}
+                </span>
               </div>
 
             </div>
