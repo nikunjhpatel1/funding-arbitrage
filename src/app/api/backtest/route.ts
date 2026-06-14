@@ -1,6 +1,23 @@
 import { NextResponse } from 'next/server';
-import { db } from '../../../lib/db';
-import { TAKER_FEES } from '../paper-trading/route';
+import db from '@/lib/db';
+
+const TAKER_FEES: Record<string, number> = {
+  binance:     0.0004,
+  bybit:       0.0006,
+  okx:         0.0005,
+  bitget:      0.0006,
+  kucoin:      0.0006,
+  gateio:      0.0005,
+  mexc:        0.0000,
+  bingx:       0.0005,
+  htx:         0.0005,
+  bitmex:      0.00075,
+  dydx:        0.0005,
+  hyperliquid: 0.00035,
+  phemex:      0.0006,
+  blofin:      0.0005,
+  delta:       0.0005,
+};
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
@@ -19,8 +36,17 @@ export async function POST(req: Request) {
       slippagePct 
     } = body;
 
-    const startTs = new Date(startDate).getTime();
-    const endTs = new Date(endDate).getTime();
+    const parseDate = (dStr: string) => {
+      if (!dStr) return 0;
+      const parts = dStr.split('-');
+      if (parts.length === 3) {
+        const [dd, mm, yyyy] = parts;
+        return new Date(Number(yyyy), Number(mm) - 1, Number(dd)).getTime();
+      }
+      return new Date(dStr).getTime();
+    };
+    const startTs = parseDate(startDate);
+    const endTs = parseDate(endDate);
 
     // 1. Fetch historical data
     const rows = db.prepare(`
@@ -116,8 +142,8 @@ export async function POST(req: Request) {
 
         if (annualizedSpread <= closeSpreadPct) {
           // Close Position
-          const exitLongPrice = longData?.price ?? currentPosition.entry_long_price;
-          const exitShortPrice = shortData?.price ?? currentPosition.entry_short_price;
+          const exitLongPrice = longData?.price || snapshot['binance']?.price || currentPosition.entry_long_price || 1;
+          const exitShortPrice = shortData?.price || snapshot['binance']?.price || currentPosition.entry_short_price || 1;
 
           const longPricePnl = ((exitLongPrice - currentPosition.entry_long_price) / currentPosition.entry_long_price) * notional;
           const shortPricePnl = ((currentPosition.entry_short_price - exitShortPrice) / currentPosition.entry_short_price) * notional;
@@ -204,8 +230,8 @@ export async function POST(req: Request) {
             long_exchange: bestLongEx,
             short_exchange: bestShortEx,
             notional,
-            entry_long_price: snapshot[bestLongEx].price,
-            entry_short_price: snapshot[bestShortEx].price,
+            entry_long_price: snapshot[bestLongEx].price || snapshot['binance']?.price || 1,
+            entry_short_price: snapshot[bestShortEx].price || snapshot['binance']?.price || 1,
             long_funding: 0,
             short_funding: 0,
             entry_cost: entryCost,
@@ -218,8 +244,8 @@ export async function POST(req: Request) {
       // Equity curve calculation
       let currentEquity = equity;
       if (currentPosition) {
-        const exitLongPrice = snapshot[currentPosition.long_exchange]?.price ?? currentPosition.entry_long_price;
-        const exitShortPrice = snapshot[currentPosition.short_exchange]?.price ?? currentPosition.entry_short_price;
+        const exitLongPrice = snapshot[currentPosition.long_exchange]?.price || snapshot['binance']?.price || currentPosition.entry_long_price || 1;
+        const exitShortPrice = snapshot[currentPosition.short_exchange]?.price || snapshot['binance']?.price || currentPosition.entry_short_price || 1;
 
         const longPricePnl = ((exitLongPrice - currentPosition.entry_long_price) / currentPosition.entry_long_price) * currentPosition.notional;
         const shortPricePnl = ((currentPosition.entry_short_price - exitShortPrice) / currentPosition.entry_short_price) * currentPosition.notional;
@@ -301,8 +327,11 @@ export async function POST(req: Request) {
       tradeLog: tradeLog.sort((a, b) => b.exitTime - a.exitTime) // latest first
     });
 
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('Backtest error:', error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : String(error) },
+      { status: 500 }
+    );
   }
 }
