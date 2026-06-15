@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import db from '@/lib/db';
+import { supabase } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -1173,7 +1174,7 @@ export async function GET() {
     // Asynchronously save historical data and update positions so we don't block response
     saveHistoricalData(oldGlobalCache.data).catch(console.error);
     try {
-      updatePaperPositions(oldGlobalCache.data);
+      await updatePaperPositions(oldGlobalCache.data);
     } catch (e) {
       console.error(e);
     }
@@ -1254,122 +1255,103 @@ async function saveHistoricalData(entries: FundingRateEntry[]) {
 }
 
 // ─── Paper Trading Accrual Engine ───────────────────────────────────────────
-function updatePaperPositions(rates: FundingRateEntry[]) {
+async function updatePaperPositions(rates: FundingRateEntry[]) {
   try {
-    const positions = db.prepare(`SELECT * FROM paper_positions WHERE status = 'OPEN'`).all() as any[];
+    const { data: positions, error: fetchError } = await supabase
+      .from('paper_positions')
+      .select('*')
+      .eq('status', 'OPEN');
+
+    if (fetchError) throw fetchError;
+    if (!positions || positions.length === 0) return;
+
     console.log('[Paper Trading] Running accrual for', positions.length, 'positions');
-    
-    if (positions.length === 0) return;
-    
+
     const now = Date.now();
-    const updateStmt = db.prepare(`
-      UPDATE paper_positions 
-      SET long_funding_received  = long_funding_received  + ?,
-          long_funding_paid      = long_funding_paid      + ?,
-          long_funding           = (long_funding_received  + ?) - (long_funding_paid  + ?),
-          short_funding_received = short_funding_received + ?,
-          short_funding_paid     = short_funding_paid     + ?,
-          short_funding          = (short_funding_received + ?) - (short_funding_paid + ?),
-          funding_events_count   = funding_events_count   + ?,
-          last_funding_accrual_time = ?
-      WHERE id = ?
-    `);
 
-    // Cursor-only advance when no delta to record
-    const advanceCursorStmt = db.prepare(
-      `UPDATE paper_positions SET last_funding_accrual_time = ? WHERE id = ?`
-    );
-
-    db.transaction((posList: any[]) => {
-      for (const pos of posList) {
-        const rateData = rates.find(r => r.symbol === pos.symbol);
-        if (!rateData) {
-          console.log('[Funding] No rate data for', pos.symbol, '— skipping');
-          continue;
-        }
-
-        // Each leg uses its OWN exchange's current live rate
-        const longRate  = rateData[pos.long_exchange  as keyof FundingRateEntry] as number | null;
-        const shortRate = rateData[pos.short_exchange as keyof FundingRateEntry] as number | null;
-
-        // ── Cursor-based accrual ──────────────────────────────────────────────
-        // Use last_funding_accrual_time as the high-water mark.
-        // Every call advances this cursor to `now`, so only NEW complete intervals
-        // since the last call are credited — preventing double-counting.
-        // Critically: both legs are ALWAYS processed — one leg's result
-        // does NOT gate the other. This was the BUG 3 root cause.
-        const cursorMs  = pos.last_funding_accrual_time ?? pos.entry_time ?? now;
-        const elapsedMs = now - cursorMs;
-
-        if (elapsedMs < 60_000) {
-          // Less than 1 minute since last accrual — nothing new to process
-          continue;
-        }
-
-        const longIntervalMs  = (pos.long_funding_interval_hours  ?? 8) * 3_600_000;
-        const shortIntervalMs = (pos.short_funding_interval_hours ?? 8) * 3_600_000;
-
-        const longIntervals  = Math.floor(elapsedMs / longIntervalMs);
-        const shortIntervals = Math.floor(elapsedMs / shortIntervalMs);
-
-        if (longIntervals === 0 && shortIntervals === 0) {
-          advanceCursorStmt.run(now, pos.id);
-          continue;
-        }
-
-        const notional = pos.notional_per_leg as number;
-
-        // ── Long leg funding ──────────────────────────────────────────────────
-        // Standard perp convention:
-        //   rate > 0 → longs PAY shorts   → long leg pays
-        //   rate < 0 → shorts pay longs   → long leg RECEIVES
-        let longRcvDelta  = 0;
-        let longPaidDelta = 0;
-        if (longRate != null && longIntervals > 0) {
-          const amt = Math.abs(longRate) * notional * longIntervals;
-          if (longRate > 0) longPaidDelta = amt;
-          else              longRcvDelta  = amt;
-        }
-
-        // ── Short leg funding ─────────────────────────────────────────────────
-        // Standard perp convention:
-        //   rate > 0 → shorts RECEIVE from longs  → short leg receives
-        //   rate < 0 → shorts pay longs            → short leg pays
-        let shortRcvDelta  = 0;
-        let shortPaidDelta = 0;
-        if (shortRate != null && shortIntervals > 0) {
-          const amt = Math.abs(shortRate) * notional * shortIntervals;
-          if (shortRate > 0) shortRcvDelta  = amt;
-          else               shortPaidDelta = amt;
-        }
-
-        const totalIntervals = Math.max(longIntervals, shortIntervals);
-
-        console.log(
-          '[Funding Accrual]', pos.symbol,
-          `long(${pos.long_exchange}) rate=${longRate} x${longIntervals}`,
-          `-> rcv+${longRcvDelta.toFixed(6)} paid+${longPaidDelta.toFixed(6)}`,
-          `| short(${pos.short_exchange}) rate=${shortRate} x${shortIntervals}`,
-          `-> rcv+${shortRcvDelta.toFixed(6)} paid+${shortPaidDelta.toFixed(6)}`
-        );
-
-        // Always write and advance cursor so intervals are not re-counted.
-        updateStmt.run(
-          longRcvDelta,    // Δ long_funding_received
-          longPaidDelta,   // Δ long_funding_paid
-          longRcvDelta,    // for net: new long_funding_received = old + Δ
-          longPaidDelta,   // for net: new long_funding_paid     = old + Δ
-          shortRcvDelta,   // Δ short_funding_received
-          shortPaidDelta,  // Δ short_funding_paid
-          shortRcvDelta,   // for net: new short_funding_received = old + Δ
-          shortPaidDelta,  // for net: new short_funding_paid     = old + Δ
-          totalIntervals,
-          now,
-          pos.id
-        );
+    for (const pos of positions as any[]) {
+      const rateData = rates.find(r => r.symbol === pos.symbol);
+      if (!rateData) {
+        console.log('[Funding] No rate data for', pos.symbol, '— skipping');
+        continue;
       }
-    })(positions);
-    
+
+      const longRate  = rateData[pos.long_exchange  as keyof FundingRateEntry] as number | null;
+      const shortRate = rateData[pos.short_exchange as keyof FundingRateEntry] as number | null;
+
+      const cursorMs  = pos.last_funding_accrual_time ?? pos.entry_time ?? now;
+      const elapsedMs = now - cursorMs;
+
+      if (elapsedMs < 60_000) {
+        continue;
+      }
+
+      const longIntervalMs  = (pos.long_funding_interval_hours  ?? 8) * 3_600_000;
+      const shortIntervalMs = (pos.short_funding_interval_hours ?? 8) * 3_600_000;
+
+      const longIntervals  = Math.floor(elapsedMs / longIntervalMs);
+      const shortIntervals = Math.floor(elapsedMs / shortIntervalMs);
+
+      if (longIntervals === 0 && shortIntervals === 0) {
+        await supabase
+          .from('paper_positions')
+          .update({ last_funding_accrual_time: now })
+          .eq('id', pos.id);
+        continue;
+      }
+
+      const notional = pos.notional_per_leg as number;
+
+      let longRcvDelta  = 0;
+      let longPaidDelta = 0;
+      if (longRate != null && longIntervals > 0) {
+        const amt = Math.abs(longRate) * notional * longIntervals;
+        if (longRate > 0) longPaidDelta = amt;
+        else              longRcvDelta  = amt;
+      }
+
+      let shortRcvDelta  = 0;
+      let shortPaidDelta = 0;
+      if (shortRate != null && shortIntervals > 0) {
+        const amt = Math.abs(shortRate) * notional * shortIntervals;
+        if (shortRate > 0) shortRcvDelta  = amt;
+        else               shortPaidDelta = amt;
+      }
+
+      const totalIntervals = Math.max(longIntervals, shortIntervals);
+
+      console.log(
+        '[Funding Accrual]', pos.symbol,
+        `long(${pos.long_exchange}) rate=${longRate} x${longIntervals}`,
+        `-> rcv+${longRcvDelta.toFixed(6)} paid+${longPaidDelta.toFixed(6)}`,
+        `| short(${pos.short_exchange}) rate=${shortRate} x${shortIntervals}`,
+        `-> rcv+${shortRcvDelta.toFixed(6)} paid+${shortPaidDelta.toFixed(6)}`
+      );
+
+      const newLongRcv   = pos.long_funding_received  + longRcvDelta;
+      const newLongPaid  = pos.long_funding_paid       + longPaidDelta;
+      const newShortRcv  = pos.short_funding_received + shortRcvDelta;
+      const newShortPaid = pos.short_funding_paid      + shortPaidDelta;
+
+      const { error: updateError } = await supabase
+        .from('paper_positions')
+        .update({
+          long_funding_received:  newLongRcv,
+          long_funding_paid:      newLongPaid,
+          long_funding:           newLongRcv  - newLongPaid,
+          short_funding_received: newShortRcv,
+          short_funding_paid:     newShortPaid,
+          short_funding:          newShortRcv - newShortPaid,
+          funding_events_count:   pos.funding_events_count + totalIntervals,
+          last_funding_accrual_time: now,
+        })
+        .eq('id', pos.id);
+
+      if (updateError) {
+        console.error('[Paper Trading] Failed to update position', pos.id, updateError);
+      }
+    }
+
   } catch (e) {
     console.error('[Paper Trading] Accrual engine error', e);
   }

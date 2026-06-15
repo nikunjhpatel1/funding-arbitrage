@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import db from '@/lib/db';
+import { supabase } from '@/lib/supabase';
 import crypto from 'crypto';
 import { getExchangePrice } from '@/lib/getExchangePrice';
 import { calculateSlippage } from '@/lib/slippage';
@@ -14,7 +14,7 @@ export type PaperPosition = {
   close_time: number | null;
   status: 'OPEN' | 'CLOSED';
   close_reason: 'MANUAL' | 'LIQUIDATED' | null;
-  
+
   long_exchange: string;
   long_entry_price: number;
   long_mark_price?: number;
@@ -22,15 +22,15 @@ export type PaperPosition = {
   long_slippage?: number;
   long_slippage_cost?: number;
   long_close_price: number | null;
-  long_funding: number;          // Net: positive = received, negative = paid
-  long_funding_received: number; // Gross received
-  long_funding_paid: number;     // Gross paid (positive number)
+  long_funding: number;
+  long_funding_received: number;
+  long_funding_paid: number;
   long_fees: number;
   long_realized_pnl: number | null;
   long_next_funding_time: number | null;
   long_funding_interval_hours: number;
   long_rate_at_entry: number;
-  
+
   short_exchange: string;
   short_entry_price: number;
   short_mark_price?: number;
@@ -38,24 +38,29 @@ export type PaperPosition = {
   short_slippage?: number;
   short_slippage_cost?: number;
   short_close_price: number | null;
-  short_funding: number;          // Net: positive = received, negative = paid
-  short_funding_received: number; // Gross received
-  short_funding_paid: number;     // Gross paid (positive number)
+  short_funding: number;
+  short_funding_received: number;
+  short_funding_paid: number;
   short_fees: number;
   short_realized_pnl: number | null;
   short_next_funding_time: number | null;
   short_funding_interval_hours: number;
   short_rate_at_entry: number;
-  
+
   funding_events_count: number;
   last_funding_accrual_time: number;
 };
 
 export async function GET() {
   try {
-    const stmt = db.prepare('SELECT * FROM paper_positions ORDER BY entry_time DESC');
-    const positions = stmt.all() as PaperPosition[];
-    return NextResponse.json({ success: true, data: positions });
+    const { data, error } = await supabase
+      .from('paper_positions')
+      .select('*')
+      .order('entry_time', { ascending: false });
+
+    if (error) throw error;
+
+    return NextResponse.json({ success: true, data: data as PaperPosition[] });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }
@@ -80,22 +85,21 @@ const TAKER_FEES: Record<string, number> = {
 };
 
 const VALID_EXCHANGES = new Set(Object.keys(TAKER_FEES));
-const MIN_CAPITAL = 10;     // $10 minimum
-const MAX_CAPITAL = 10_000_000; // $10M maximum
+const MIN_CAPITAL = 10;
+const MAX_CAPITAL = 10_000_000;
 const MIN_LEVERAGE = 1;
 const MAX_LEVERAGE = 125;
 
 export async function POST(req: Request) {
   try {
     const body = await req.json();
-    const { 
-      symbol, longExchange, shortExchange, capital, leverage, 
-      longEntryPrice, shortEntryPrice, entryPrice, 
+    const {
+      symbol, longExchange, shortExchange, capital, leverage,
+      longEntryPrice, shortEntryPrice, entryPrice,
       longNextTime, shortNextTime, longIntervalHours, shortIntervalHours,
       longRateAtEntry, shortRateAtEntry
     } = body;
-    
-    // ── FIX H-7: Server-side input validation ─────────────────────────────────
+
     if (!symbol || typeof symbol !== 'string' || !symbol.includes('/')) {
       return NextResponse.json({ error: 'Invalid symbol format. Expected: BASE/QUOTE (e.g. BTC/USDT)' }, { status: 400 });
     }
@@ -116,7 +120,7 @@ export async function POST(req: Request) {
     if (isNaN(leverageNum) || leverageNum < MIN_LEVERAGE || leverageNum > MAX_LEVERAGE || !Number.isInteger(leverageNum)) {
       return NextResponse.json({ error: `Leverage must be an integer between ${MIN_LEVERAGE}x and ${MAX_LEVERAGE}x` }, { status: 400 });
     }
-    // Fetch prices and orderbooks in parallel
+
     const protocol = req.headers.get('x-forwarded-proto') || 'http';
     const host = req.headers.get('host') || 'localhost:3000';
     const orderbookUrl = `${protocol}://${host}/api/orderbook?symbol=${encodeURIComponent(symbol)}&exchanges=${longExchange},${shortExchange}`;
@@ -135,23 +139,21 @@ export async function POST(req: Request) {
       shortOrderbook = obData.data?.[shortExchange] || null;
     }
 
-    // Use fetched prices or fallback to API price
     const longMarkPrice = longPrice ?? longEntryPrice ?? entryPrice ?? 0;
     const shortMarkPrice = shortPrice ?? shortEntryPrice ?? entryPrice ?? 0;
-    
+
     const notionalPerLeg = capital * leverage;
 
-    // Calculate slippage using the orderbooks
     const longSlippageResult = calculateSlippage(longOrderbook, 'buy', notionalPerLeg, longMarkPrice);
     const shortSlippageResult = calculateSlippage(shortOrderbook, 'sell', notionalPerLeg, shortMarkPrice);
 
-    const longFillPrice = longSlippageResult.fullyFilled && longSlippageResult.averageFillPrice > 0 
-      ? longSlippageResult.averageFillPrice 
+    const longFillPrice = longSlippageResult.fullyFilled && longSlippageResult.averageFillPrice > 0
+      ? longSlippageResult.averageFillPrice
       : longSlippageResult.markPriceUsed || longMarkPrice;
     const longSlippagePct = longSlippageResult.fullyFilled ? longSlippageResult.slippagePercent : null;
 
-    const shortFillPrice = shortSlippageResult.fullyFilled && shortSlippageResult.averageFillPrice > 0 
-      ? shortSlippageResult.averageFillPrice 
+    const shortFillPrice = shortSlippageResult.fullyFilled && shortSlippageResult.averageFillPrice > 0
+      ? shortSlippageResult.averageFillPrice
       : shortSlippageResult.markPriceUsed || shortMarkPrice;
     const shortSlippagePct = shortSlippageResult.fullyFilled ? shortSlippageResult.slippagePercent : null;
 
@@ -164,15 +166,17 @@ export async function POST(req: Request) {
       notional: notionalPerLeg,
     });
 
-    // Issue 1: Check for duplicates
-    const checkStmt = db.prepare(`
-      SELECT id FROM paper_positions 
-      WHERE symbol = ? 
-      AND long_exchange = ? 
-      AND short_exchange = ? 
-      AND status = 'OPEN'
-    `);
-    const existing = checkStmt.get(symbol, longExchange, shortExchange);
+    const { data: existing, error: existingError } = await supabase
+      .from('paper_positions')
+      .select('id')
+      .eq('symbol', symbol)
+      .eq('long_exchange', longExchange)
+      .eq('short_exchange', shortExchange)
+      .eq('status', 'OPEN')
+      .maybeSingle();
+
+    if (existingError) throw existingError;
+
     if (existing) {
       return NextResponse.json(
         { error: 'Position already open for this pair and exchange combination' },
@@ -182,32 +186,47 @@ export async function POST(req: Request) {
 
     const id = crypto.randomUUID();
     const entryTime = Date.now();
-    
-    // Bug 2: Entry fee calculation
+
     const longFee = notionalPerLeg * (TAKER_FEES[longExchange] ?? 0.0005);
     const shortFee = notionalPerLeg * (TAKER_FEES[shortExchange] ?? 0.0005);
 
-    const stmt = db.prepare(`
-      INSERT INTO paper_positions (
-        id, symbol, capital, leverage, notional_per_leg,
-        entry_time, status, 
-        long_exchange, long_entry_price, long_fees, long_next_funding_time, long_funding_interval_hours, long_rate_at_entry,
-        long_mark_price, long_fill_price, long_slippage, long_slippage_cost,
-        short_exchange, short_entry_price, short_fees, short_next_funding_time, short_funding_interval_hours, short_rate_at_entry,
-        short_mark_price, short_fill_price, short_slippage, short_slippage_cost,
-        last_funding_accrual_time, funding_events_count, long_funding, short_funding
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
+    const { error: insertError } = await supabase
+      .from('paper_positions')
+      .insert({
+        id,
+        symbol,
+        capital,
+        leverage,
+        notional_per_leg: notionalPerLeg,
+        entry_time: entryTime,
+        status: 'OPEN',
+        long_exchange: longExchange,
+        long_entry_price: longFillPrice,
+        long_fees: longFee,
+        long_next_funding_time: longNextTime || null,
+        long_funding_interval_hours: longIntervalHours || 8,
+        long_rate_at_entry: longRateAtEntry || 0,
+        long_mark_price: longSlippageResult.markPriceUsed || longMarkPrice,
+        long_fill_price: longFillPrice,
+        long_slippage: longSlippagePct,
+        long_slippage_cost: longSlippageResult.fullyFilled ? longSlippageResult.executionCostUSD : 0,
+        short_exchange: shortExchange,
+        short_entry_price: shortFillPrice,
+        short_fees: shortFee,
+        short_next_funding_time: shortNextTime || null,
+        short_funding_interval_hours: shortIntervalHours || 8,
+        short_rate_at_entry: shortRateAtEntry || 0,
+        short_mark_price: shortSlippageResult.markPriceUsed || shortMarkPrice,
+        short_fill_price: shortFillPrice,
+        short_slippage: shortSlippagePct,
+        short_slippage_cost: shortSlippageResult.fullyFilled ? shortSlippageResult.executionCostUSD : 0,
+        last_funding_accrual_time: entryTime,
+        funding_events_count: 0,
+        long_funding: 0,
+        short_funding: 0,
+      });
 
-    stmt.run(
-      id, symbol, capital, leverage, notionalPerLeg,
-      entryTime, 'OPEN',
-      longExchange, longFillPrice, longFee, longNextTime || null, longIntervalHours || 8, longRateAtEntry || 0,
-      longSlippageResult.markPriceUsed || longMarkPrice, longFillPrice, longSlippagePct, longSlippageResult.fullyFilled ? longSlippageResult.executionCostUSD : 0,
-      shortExchange, shortFillPrice, shortFee, shortNextTime || null, shortIntervalHours || 8, shortRateAtEntry || 0,
-      shortSlippageResult.markPriceUsed || shortMarkPrice, shortFillPrice, shortSlippagePct, shortSlippageResult.fullyFilled ? shortSlippageResult.executionCostUSD : 0,
-      entryTime, 0, 0, 0
-    );
+    if (insertError) throw insertError;
 
     return NextResponse.json({ success: true, id });
   } catch (error: any) {

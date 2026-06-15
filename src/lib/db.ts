@@ -48,85 +48,11 @@ const initSql = `
   );
   CREATE INDEX IF NOT EXISTS idx_history_lookup ON funding_rate_history(symbol, exchange, recorded_at);
 
-    CREATE TABLE IF NOT EXISTS paper_positions (
-      id TEXT PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      capital REAL NOT NULL,
-      leverage REAL NOT NULL,
-      notional_per_leg REAL NOT NULL,
-      entry_time INTEGER NOT NULL,
-      close_time INTEGER,
-      status TEXT DEFAULT 'OPEN',
-      
-      long_exchange TEXT NOT NULL,
-      long_entry_price REAL,
-      long_close_price REAL,
-      long_funding REAL DEFAULT 0,
-      long_fees REAL NOT NULL,
-      long_realized_pnl REAL,
-      long_next_funding_time INTEGER,
-      long_funding_interval_hours REAL DEFAULT 8,
-      long_rate_at_entry REAL,
-      
-      short_exchange TEXT NOT NULL,
-      short_entry_price REAL,
-      short_close_price REAL,
-      short_funding REAL DEFAULT 0,
-      short_fees REAL NOT NULL,
-      short_realized_pnl REAL,
-      short_next_funding_time INTEGER,
-      short_funding_interval_hours REAL DEFAULT 8,
-      short_rate_at_entry REAL,
-      
-      funding_events_count INTEGER DEFAULT 0,
-      last_funding_accrual_time INTEGER
-    );
+
 `;
 
 db.exec(initSql);
 
-// ─── Safe column migrations ────────────────────────────────────────────────────
-// Use ALTER TABLE only if the column does not yet exist (safe to re-run).
-const addColumnIfMissing = (table: string, column: string, definition: string) => {
-  try {
-    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
-    if (!cols.find(c => c.name === column)) {
-      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
-      console.log(`[SQLite] Added column ${table}.${column}`);
-    }
-  } catch (e) {
-    console.error(`[SQLite] Failed to add ${table}.${column}:`, e);
-  }
-};
-
-// close_reason: 'MANUAL' | 'LIQUIDATED'
-addColumnIfMissing('paper_positions', 'close_reason', "TEXT DEFAULT 'MANUAL'");
-// Granular funding tracking: separate received vs paid per leg
-addColumnIfMissing('paper_positions', 'long_funding_received',  'REAL DEFAULT 0');
-addColumnIfMissing('paper_positions', 'long_funding_paid',      'REAL DEFAULT 0');
-addColumnIfMissing('paper_positions', 'short_funding_received', 'REAL DEFAULT 0');
-addColumnIfMissing('paper_positions', 'short_funding_paid',     'REAL DEFAULT 0');
-
-// Additional column guarantees from user request
-addColumnIfMissing('paper_positions', 'long_entry_price', 'REAL');
-addColumnIfMissing('paper_positions', 'short_entry_price', 'REAL');
-addColumnIfMissing('paper_positions', 'long_rate_at_entry', 'REAL');
-addColumnIfMissing('paper_positions', 'short_rate_at_entry', 'REAL');
-addColumnIfMissing('paper_positions', 'notional_per_leg', 'REAL');
-addColumnIfMissing('paper_positions', 'entry_fee', 'REAL DEFAULT 0');
-addColumnIfMissing('paper_positions', 'funding_events_count', 'INTEGER DEFAULT 0');
-addColumnIfMissing('paper_positions', 'long_funding_interval_hours', 'REAL DEFAULT 8');
-addColumnIfMissing('paper_positions', 'short_funding_interval_hours', 'REAL DEFAULT 8');
-
-// Slippage engine updates
-addColumnIfMissing('paper_positions', 'long_mark_price', 'REAL');
-addColumnIfMissing('paper_positions', 'long_fill_price', 'REAL');
-addColumnIfMissing('paper_positions', 'long_slippage', 'REAL');
-addColumnIfMissing('paper_positions', 'long_slippage_cost', 'REAL DEFAULT 0');
-addColumnIfMissing('paper_positions', 'short_mark_price', 'REAL');
-addColumnIfMissing('paper_positions', 'short_fill_price', 'REAL');
-addColumnIfMissing('paper_positions', 'short_slippage', 'REAL');
-addColumnIfMissing('paper_positions', 'short_slippage_cost', 'REAL DEFAULT 0');
 
 
 // ─── Data Retention Policy ────────────────────────────────────────────────────
