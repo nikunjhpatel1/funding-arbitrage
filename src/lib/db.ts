@@ -122,9 +122,11 @@ addColumnIfMissing('paper_positions', 'short_funding_interval_hours', 'REAL DEFA
 addColumnIfMissing('paper_positions', 'long_mark_price', 'REAL');
 addColumnIfMissing('paper_positions', 'long_fill_price', 'REAL');
 addColumnIfMissing('paper_positions', 'long_slippage', 'REAL');
+addColumnIfMissing('paper_positions', 'long_slippage_cost', 'REAL DEFAULT 0');
 addColumnIfMissing('paper_positions', 'short_mark_price', 'REAL');
 addColumnIfMissing('paper_positions', 'short_fill_price', 'REAL');
 addColumnIfMissing('paper_positions', 'short_slippage', 'REAL');
+addColumnIfMissing('paper_positions', 'short_slippage_cost', 'REAL DEFAULT 0');
 
 
 // ─── Data Retention Policy ────────────────────────────────────────────────────

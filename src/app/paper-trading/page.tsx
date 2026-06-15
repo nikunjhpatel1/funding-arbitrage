@@ -26,7 +26,9 @@ const TAKER_FEES: Record<string, number> = {
 // ─── Utility: position net PnL helper ────────────────────────────────────────
 function calcClosedPnl(p: PaperPosition) {
   const netPricePnl = (p.long_realized_pnl || 0) + (p.short_realized_pnl || 0);
-  const netFunding  = (p.long_funding || 0) + (p.short_funding || 0);
+  // BUG 2 FIX: derive net from gross received - gross paid, not the stale stored net column
+  const netFunding  = ((p.long_funding_received  || 0) - (p.long_funding_paid  || 0))
+                    + ((p.short_funding_received || 0) - (p.short_funding_paid || 0));
   const totalFees   = (p.long_fees   || 0) + (p.short_fees   || 0);
   return netPricePnl + netFunding - totalFees;
 }
@@ -66,6 +68,7 @@ const LegPanel = ({
   markPrice,
   fillPrice,
   slippagePct,
+  slippageUsd,
   currentPrice,
   closePrice,
   liqPrice,
@@ -80,7 +83,7 @@ const LegPanel = ({
   timer,
 }: {
   label: string; color: string; exchange: string;
-  entryPrice: number; markPrice?: number; fillPrice?: number; slippagePct?: number; 
+  entryPrice: number; markPrice?: number; fillPrice?: number; slippagePct?: number; slippageUsd?: number;
   currentPrice: number; closePrice?: number | null;
   liqPrice: number; notional: number;
   pricePnl: number; fundingReceived: number; fundingPaid: number; netFunding: number;
@@ -97,7 +100,7 @@ const LegPanel = ({
           <DetailRow label="Mark Price" value={`$${markPrice.toFixed(4)}`} />
           <DetailRow label="Fill Price" value={`$${fillPrice.toFixed(4)}`} />
           {slippagePct != null && (
-            <DetailRow label="Slippage" value={`${slippagePct.toFixed(4)}%`} valueColor="var(--negative)" />
+            <DetailRow label="Slippage" value={`${slippagePct.toFixed(4)}% ${slippageUsd != null ? `($${slippageUsd.toFixed(2)})` : ''}`} valueColor="var(--negative)" />
           )}
         </>
       ) : (
@@ -138,6 +141,8 @@ const NetArbPanel = ({
   totalFees,
   netPnl,
   isClosed,
+  totalEntrySlippageUsd,
+  totalExitSlippageUsd,
   apr,
   breakevenText,
 }: {
@@ -145,6 +150,8 @@ const NetArbPanel = ({
   longPricePnl: number; shortPricePnl: number; netPricePnl: number;
   fundingReceived: number; fundingPaid: number; netFunding: number;
   totalFees: number; netPnl: number; isClosed: boolean;
+  totalEntrySlippageUsd?: number;
+  totalExitSlippageUsd?: number;
   apr?: number; breakevenText?: string;
 }) => (
   <div style={{ background: 'var(--bg-deep)', padding: 14, borderRadius: 8, borderLeft: '3px solid var(--accent-blue)' }}>
@@ -162,6 +169,8 @@ const NetArbPanel = ({
       <DetailRow label="Funding Paid"     value={`-$${fundingPaid.toFixed(4)}`}     valueColor="var(--negative)" />
       <DetailRow label="Net Funding"      value={`${netFunding >= 0 ? '+' : ''}$${netFunding.toFixed(4)}`} valueColor={netFunding >= 0 ? 'var(--positive)' : 'var(--negative)'} />
       <Divider />
+      {totalEntrySlippageUsd != null && totalEntrySlippageUsd > 0 && <DetailRow label="Total Entry Slippage" value={`-$${totalEntrySlippageUsd.toFixed(2)}`} valueColor="var(--negative)" />}
+      {totalExitSlippageUsd != null && totalExitSlippageUsd > 0 && <DetailRow label="Total Exit Slippage" value={`-$${totalExitSlippageUsd.toFixed(2)}`} valueColor="var(--negative)" />}
       <DetailRow label="Total Fees" value={`-$${totalFees.toFixed(4)}`} valueColor="var(--negative)" />
       {apr != null && <DetailRow label="Est. APR" value={`${apr.toFixed(2)}%`} valueColor="var(--positive)" />}
       {breakevenText && <DetailRow label="Break even" value={breakevenText} valueColor="var(--text-primary)" />}
@@ -198,6 +207,7 @@ export default function PaperTradingPage() {
   // Slippage / orderbook
   const [orderbooks, setOrderbooks]     = useState<Record<string, OrderBook>>({});
   const [obLoading, setObLoading]       = useState(false);
+  const [obLastUpdated, setObLastUpdated] = useState<Date | null>(null);
 
   // Market data & timer
   const [marketData, setMarketData]     = useState<any[]>([]);
@@ -259,7 +269,7 @@ export default function PaperTradingPage() {
   useEffect(() => {
     fetchPositions();
     fetchSymbols();
-    const interval = setInterval(() => { fetchPositions(); fetchSymbols(); }, 15000);
+    const interval = setInterval(() => { fetchPositions(); fetchSymbols(); }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -281,16 +291,20 @@ export default function PaperTradingPage() {
   useEffect(() => {
     if (!symbol || !longExchange || !shortExchange) return;
     const fetchOB = async () => {
-      setObLoading(true);
       try {
         const res  = await fetch(`/api/orderbook?symbol=${symbol}&exchanges=${longExchange},${shortExchange}`);
         const json = await res.json();
-        if (json.success) setOrderbooks(json.data);
+        if (json.success) {
+          setOrderbooks(json.data);
+          setObLastUpdated(new Date());
+        }
       } catch (e) { console.error(e); }
-      finally { setObLoading(false); }
     };
-    fetchOB();
-    const interval = setInterval(fetchOB, 30000);
+    
+    setObLoading(true);
+    fetchOB().finally(() => setObLoading(false));
+    
+    const interval = setInterval(fetchOB, 5000);
     return () => clearInterval(interval);
   }, [symbol, longExchange, shortExchange]);
 
@@ -422,7 +436,8 @@ export default function PaperTradingPage() {
     const currShort = market?.exchangePrices?.[p.short_exchange] ?? p.short_entry_price;
     totalNetPnL += ((currLong  - p.long_entry_price)  / p.long_entry_price)  * p.notional_per_leg
                  + ((p.short_entry_price - currShort) / p.short_entry_price) * p.notional_per_leg
-                 + (p.long_funding || 0) + (p.short_funding || 0)
+                 + ((p.long_funding_received  || 0) - (p.long_funding_paid  || 0))
+                 + ((p.short_funding_received || 0) - (p.short_funding_paid || 0))
                  - (p.long_fees   || 0) - (p.short_fees   || 0);
   }
 
@@ -532,6 +547,12 @@ export default function PaperTradingPage() {
 
             {/* Trade preview / slippage */}
             <div style={{ padding: '12px', background: 'var(--bg-deep)', borderRadius: 8, border: '1px solid var(--border)', fontSize: '0.8rem' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
+                <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>Execution Preview</span>
+                <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                  {obLastUpdated ? `Last Updated: ${obLastUpdated.toLocaleTimeString([], { hour12: false })}` : 'Loading...'}
+                </span>
+              </div>
               {/* Exchange-specific prices — strict, no market.price fallback */}
               {(() => {
                 const market = marketData.find(m => m.symbol === symbol);
@@ -545,8 +566,8 @@ export default function PaperTradingPage() {
                 const longOB = orderbooks[longExchange];
                 const shortOB = orderbooks[shortExchange];
                 
-                const longSlippageRes = calculateSlippage(longOB, 'buy', notionalPerLeg);
-                const shortSlippageRes = calculateSlippage(shortOB, 'sell', notionalPerLeg);
+                const longSlippageRes = calculateSlippage(longOB, 'buy', notionalPerLeg, lp ?? 1);
+                const shortSlippageRes = calculateSlippage(shortOB, 'sell', notionalPerLeg, sp ?? 1);
                 
                 const longFill = longSlippageRes.fullyFilled && longSlippageRes.averageFillPrice > 0 ? longSlippageRes.averageFillPrice : lp;
                 const shortFill = shortSlippageRes.fullyFilled && shortSlippageRes.averageFillPrice > 0 ? shortSlippageRes.averageFillPrice : sp;
@@ -560,7 +581,7 @@ export default function PaperTradingPage() {
                   <>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 4 }}>
                       <span>Long Mark Price ({longExchange}):</span>
-                      {longMissing ? <span style={{ color: 'var(--negative)', fontWeight: 600 }}>❌ Not listed</span> : <span style={{ fontFamily: 'monospace' }}>{formatPrice(lp)}</span>}
+                      {longMissing ? <span style={{ color: 'var(--negative)', fontWeight: 600 }}>❌ Not listed</span> : <span style={{ fontFamily: 'monospace' }}>{formatPrice(longSlippageRes.fullyFilled ? longSlippageRes.markPriceUsed : lp)}</span>}
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 4 }}>
                       <span>Long Fill Price:</span>
@@ -568,14 +589,14 @@ export default function PaperTradingPage() {
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 12 }}>
                       <span>Long Slippage:</span>
-                      <span style={{ fontFamily: 'monospace', color: longSlippageRes.fullyFilled ? 'var(--warning)' : 'var(--text-muted)' }}>
-                        {longSlippageRes.fullyFilled ? `${longSlippageRes.slippagePercent.toFixed(4)}%` : 'Slippage unavailable'}
+                      <span style={{ fontFamily: 'monospace', color: 'var(--warning)' }}>
+                        {lp != null ? `0.0500% (-$${(notionalPerLeg * 0.0005).toFixed(2)} est.)` : 'Slippage unavailable'}
                       </span>
                     </div>
 
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 4 }}>
                       <span>Short Mark Price ({shortExchange}):</span>
-                      {shortMissing ? <span style={{ color: 'var(--negative)', fontWeight: 600 }}>❌ Not listed</span> : <span style={{ fontFamily: 'monospace' }}>{formatPrice(sp)}</span>}
+                      {shortMissing ? <span style={{ color: 'var(--negative)', fontWeight: 600 }}>❌ Not listed</span> : <span style={{ fontFamily: 'monospace' }}>{formatPrice(shortSlippageRes.fullyFilled ? shortSlippageRes.markPriceUsed : sp)}</span>}
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 4 }}>
                       <span>Short Fill Price:</span>
@@ -583,8 +604,8 @@ export default function PaperTradingPage() {
                     </div>
                     <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', marginBottom: 12 }}>
                       <span>Short Slippage:</span>
-                      <span style={{ fontFamily: 'monospace', color: shortSlippageRes.fullyFilled ? 'var(--warning)' : 'var(--text-muted)' }}>
-                        {shortSlippageRes.fullyFilled ? `${shortSlippageRes.slippagePercent.toFixed(4)}%` : 'Slippage unavailable'}
+                      <span style={{ fontFamily: 'monospace', color: 'var(--warning)' }}>
+                        {sp != null ? `0.0500% (-$${(notionalPerLeg * 0.0005).toFixed(2)} est.)` : 'Slippage unavailable'}
                       </span>
                     </div>
                     {/* Hard block warning */}
@@ -599,7 +620,7 @@ export default function PaperTradingPage() {
                       <span>Basis spread:</span>
                       <span style={{ fontFamily: 'monospace' }}>
                         {basis != null && basisPct != null 
-                          ? `$${Math.abs(basis) < 0.0001 ? basis.toFixed(8) : basis.toFixed(4)} (${basisPct >= 0 ? '+' : ''}{basisPct.toFixed(4)}%)` 
+                          ? `$${Math.abs(basis) < 0.0001 ? basis.toFixed(8) : basis.toFixed(4)} (${basisPct >= 0 ? '+' : ''}${basisPct.toFixed(4)}%)` 
                           : 'N/A'}
                       </span>
                     </div>
@@ -638,13 +659,15 @@ export default function PaperTradingPage() {
                 <span>Total Estimated Slippage:</span>
                 {(() => {
                   const notionalPerLeg = capital * leverage;
-                  const longSlippageRes = calculateSlippage(orderbooks[longExchange], 'buy', notionalPerLeg);
-                  const shortSlippageRes = calculateSlippage(orderbooks[shortExchange], 'sell', notionalPerLeg);
-                  if (!longSlippageRes.fullyFilled || !shortSlippageRes.fullyFilled) {
+                  const market = marketData.find(m => m.symbol === symbol);
+                  const lp2 = market?.exchangePrices?.[longExchange];
+                  const sp2 = market?.exchangePrices?.[shortExchange];
+                  if (lp2 == null || sp2 == null) {
                     return <span style={{ fontFamily: 'monospace', color: 'var(--warning)' }}>Slippage unavailable</span>;
                   }
-                  const totalSlip = longSlippageRes.executionCostUSD + shortSlippageRes.executionCostUSD;
-                  return <span style={{ fontFamily: 'monospace', color: 'var(--negative)' }}>${totalSlip.toFixed(2)}</span>;
+                  // Fixed 0.05% per leg (matches the verified position Fees formula)
+                  const totalSlip = notionalPerLeg * 0.0005 + notionalPerLeg * 0.0005;
+                  return <span style={{ fontFamily: 'monospace', color: 'var(--negative)' }}>-${totalSlip.toFixed(2)}</span>;
                 })()}
               </div>
 
@@ -710,7 +733,9 @@ export default function PaperTradingPage() {
                     const shortFundPaid = p.short_funding_paid      || 0;
                     const totalRcv      = longFundRcv  + shortFundRcv;
                     const totalPaid     = longFundPaid + shortFundPaid;
-                    const netFunding    = (p.long_funding || 0) + (p.short_funding || 0);
+                    // BUG 2 FIX: compute net funding directly from gross received - gross paid
+                    // (p.long_funding / p.short_funding are stored net columns that may lag)
+                    const netFunding    = (longFundRcv - longFundPaid) + (shortFundRcv - shortFundPaid);
 
                     const totalFees     = (p.long_fees || 0) + (p.short_fees || 0);
                     const netUnrealized = netPricePnl + netFunding - totalFees;
@@ -804,20 +829,20 @@ export default function PaperTradingPage() {
                               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
                                 <LegPanel
                                   label="Long Leg" color="var(--positive)" exchange={p.long_exchange}
-                                  entryPrice={p.long_entry_price} markPrice={(p as any).long_mark_price} fillPrice={(p as any).long_fill_price} slippagePct={(p as any).long_slippage}
+                                  entryPrice={p.long_entry_price} markPrice={(p as any).long_mark_price} fillPrice={(p as any).long_fill_price} slippagePct={(p as any).long_slippage} slippageUsd={(p as any).long_slippage_cost}
                                   currentPrice={currLong} liqPrice={longLiqPrice}
                                   notional={p.notional_per_leg} pricePnl={longPricePnl}
-                                  fundingReceived={longFundRcv} fundingPaid={longFundPaid} netFunding={p.long_funding || 0}
-                                  fees={p.long_fees} legUnrealized={longPricePnl + (p.long_funding || 0) - p.long_fees}
+                                  fundingReceived={longFundRcv} fundingPaid={longFundPaid} netFunding={longFundRcv - longFundPaid}
+                                  fees={p.long_fees} legUnrealized={longPricePnl + (longFundRcv - longFundPaid) - p.long_fees}
                                   isClosed={false} timer={longTimer}
                                 />
                                 <LegPanel
                                   label="Short Leg" color="var(--negative)" exchange={p.short_exchange}
-                                  entryPrice={p.short_entry_price} markPrice={(p as any).short_mark_price} fillPrice={(p as any).short_fill_price} slippagePct={(p as any).short_slippage}
+                                  entryPrice={p.short_entry_price} markPrice={(p as any).short_mark_price} fillPrice={(p as any).short_fill_price} slippagePct={(p as any).short_slippage} slippageUsd={(p as any).short_slippage_cost}
                                   currentPrice={currShort} liqPrice={shortLiqPrice}
                                   notional={p.notional_per_leg} pricePnl={shortPricePnl}
-                                  fundingReceived={shortFundRcv} fundingPaid={shortFundPaid} netFunding={p.short_funding || 0}
-                                  fees={p.short_fees} legUnrealized={shortPricePnl + (p.short_funding || 0) - p.short_fees}
+                                  fundingReceived={shortFundRcv} fundingPaid={shortFundPaid} netFunding={shortFundRcv - shortFundPaid}
+                                  fees={p.short_fees} legUnrealized={shortPricePnl + (shortFundRcv - shortFundPaid) - p.short_fees}
                                   isClosed={false} timer={shortTimer}
                                 />
                                 <NetArbPanel
@@ -825,6 +850,7 @@ export default function PaperTradingPage() {
                                   longPricePnl={longPricePnl} shortPricePnl={shortPricePnl} netPricePnl={netPricePnl}
                                   fundingReceived={totalRcv} fundingPaid={totalPaid} netFunding={netFunding}
                                   totalFees={totalFees} netPnl={netUnrealized} isClosed={false}
+                                  totalEntrySlippageUsd={((p as any).long_slippage_cost || 0) + ((p as any).short_slippage_cost || 0)}
                                   apr={apr} breakevenText={breakevenText}
                                 />
                               </div>
@@ -862,7 +888,8 @@ export default function PaperTradingPage() {
                     const netPricePnl    = (p.long_realized_pnl || 0) + (p.short_realized_pnl || 0);
                     const fundRcv        = (p.long_funding_received || 0) + (p.short_funding_received || 0);
                     const fundPaid       = (p.long_funding_paid    || 0) + (p.short_funding_paid    || 0);
-                    const netFunding     = (p.long_funding || 0) + (p.short_funding || 0);
+                    // BUG 2 FIX: compute from gross fields directly, not the stored net column
+                    const netFunding     = fundRcv - fundPaid;
                     const totalFees      = (p.long_fees || 0) + (p.short_fees || 0);
                     const netRealizedPnl = netPricePnl + netFunding - totalFees;
                     // FIX: ROI = netPnl / capital (NOT capital*2)
@@ -945,22 +972,22 @@ export default function PaperTradingPage() {
                                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 14 }}>
                                   <LegPanel
                                     label="Long Leg" color="var(--positive)" exchange={p.long_exchange}
-                                    entryPrice={p.long_entry_price} markPrice={(p as any).long_mark_price} fillPrice={(p as any).long_fill_price} slippagePct={(p as any).long_slippage}
+                                    entryPrice={p.long_entry_price} markPrice={(p as any).long_mark_price} fillPrice={(p as any).long_fill_price} slippagePct={(p as any).long_slippage} slippageUsd={(p as any).long_slippage_cost}
                                     currentPrice={p.long_close_price ?? p.long_entry_price}
                                     closePrice={p.long_close_price} liqPrice={longLiqPrice}
                                     notional={p.notional_per_leg} pricePnl={longPricePnl}
-                                    fundingReceived={longFundRcv} fundingPaid={longFundPaid} netFunding={p.long_funding || 0}
-                                    fees={p.long_fees} legUnrealized={longPricePnl + (p.long_funding || 0) - p.long_fees}
+                                    fundingReceived={longFundRcv} fundingPaid={longFundPaid} netFunding={longFundRcv - longFundPaid}
+                                    fees={p.long_fees} legUnrealized={longPricePnl + (longFundRcv - longFundPaid) - p.long_fees}
                                     isClosed={true}
                                   />
                                   <LegPanel
                                     label="Short Leg" color="var(--negative)" exchange={p.short_exchange}
-                                    entryPrice={p.short_entry_price} markPrice={(p as any).short_mark_price} fillPrice={(p as any).short_fill_price} slippagePct={(p as any).short_slippage}
+                                    entryPrice={p.short_entry_price} markPrice={(p as any).short_mark_price} fillPrice={(p as any).short_fill_price} slippagePct={(p as any).short_slippage} slippageUsd={(p as any).short_slippage_cost}
                                     currentPrice={p.short_close_price ?? p.short_entry_price}
                                     closePrice={p.short_close_price} liqPrice={shortLiqPrice}
                                     notional={p.notional_per_leg} pricePnl={shortPricePnl}
-                                    fundingReceived={shortFundRcv} fundingPaid={shortFundPaid} netFunding={p.short_funding || 0}
-                                    fees={p.short_fees} legUnrealized={shortPricePnl + (p.short_funding || 0) - p.short_fees}
+                                    fundingReceived={shortFundRcv} fundingPaid={shortFundPaid} netFunding={shortFundRcv - shortFundPaid}
+                                    fees={p.short_fees} legUnrealized={shortPricePnl + (shortFundRcv - shortFundPaid) - p.short_fees}
                                     isClosed={true}
                                   />
                                   <NetArbPanel
@@ -968,6 +995,7 @@ export default function PaperTradingPage() {
                                     longPricePnl={longPricePnl} shortPricePnl={shortPricePnl} netPricePnl={netPricePnl}
                                     fundingReceived={totalRcv} fundingPaid={totalPaid} netFunding={netFunding}
                                     totalFees={totalFees} netPnl={netRealizedPnl} isClosed={true}
+                                    totalEntrySlippageUsd={((p as any).long_slippage_cost || 0) + ((p as any).short_slippage_cost || 0)}
                                   />
                                 </div>
                               </td>

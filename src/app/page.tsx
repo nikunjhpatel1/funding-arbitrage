@@ -37,7 +37,7 @@ interface FundingRateEntry {
   exchangeErrors: string[];
   exchangeIntervals: Record<string, number>;
   exchangePrices: Record<string, number>;
-  exchangeNextFundingTimes?: Record<string, string | undefined>;
+  exchangeNextFunding: Record<string, string>;
 }
 
 interface ApiResponse {

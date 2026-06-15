@@ -305,7 +305,7 @@ async function fetchBybit(): Promise<FetchResult<SimpleRateData>> {
     const res = await fetchWithTimeout(BYBIT_TICKERS);
     if (!res.ok) return { data, ok: false };
     const json = await res.json();
-    const list: Array<{ symbol: string; fundingRate: string; nextFundingTime: string }> =
+    const list: Array<{ symbol: string; fundingRate: string; nextFundingTime: string; lastPrice?: string }> =
       json?.result?.list ?? [];
 
     for (const item of list) {
@@ -335,7 +335,7 @@ async function fetchGateio(): Promise<FetchResult<SimpleRateData>> {
   try {
     const res = await fetchWithTimeout(GATE_CONTRACTS);
     if (!res.ok) return { data, ok: false };
-    const list: Array<{ name: string; funding_rate: string; next_funding_time: number }> =
+    const list: Array<{ name: string; funding_rate: string; next_funding_time: number; last_price?: string; mark_price?: string }> =
       await res.json();
 
     for (const item of list) {
@@ -370,6 +370,7 @@ async function fetchBitMEX(): Promise<FetchResult<SimpleRateData>> {
     const instruments: Array<{
       symbol: string; rootSymbol: string; quoteCurrency: string;
       fundingRate: number | null; fundingTimestamp: string | null;
+      lastPrice?: number; markPrice?: number;
     }> = await res.json();
 
     for (const inst of instruments) {
@@ -1191,7 +1192,7 @@ export async function GET() {
 }
 
 // ─── Historical Data Save ───────────────────────────────────────────────────
-export async function saveHistoricalData(entries: FundingRateEntry[]) {
+async function saveHistoricalData(entries: FundingRateEntry[]) {
   try {
     const now = Date.now();
       
@@ -1263,79 +1264,109 @@ function updatePaperPositions(rates: FundingRateEntry[]) {
     const now = Date.now();
     const updateStmt = db.prepare(`
       UPDATE paper_positions 
-      SET long_funding_received = long_funding_received + ?,
-          long_funding_paid = long_funding_paid + ?,
-          long_funding = long_funding_received - long_funding_paid,
+      SET long_funding_received  = long_funding_received  + ?,
+          long_funding_paid      = long_funding_paid      + ?,
+          long_funding           = (long_funding_received  + ?) - (long_funding_paid  + ?),
           short_funding_received = short_funding_received + ?,
-          short_funding_paid = short_funding_paid + ?,
-          short_funding = short_funding_received - short_funding_paid,
-          funding_events_count = funding_events_count + ?,
+          short_funding_paid     = short_funding_paid     + ?,
+          short_funding          = (short_funding_received + ?) - (short_funding_paid + ?),
+          funding_events_count   = funding_events_count   + ?,
           last_funding_accrual_time = ?
       WHERE id = ?
     `);
 
+    // Cursor-only advance when no delta to record
+    const advanceCursorStmt = db.prepare(
+      `UPDATE paper_positions SET last_funding_accrual_time = ? WHERE id = ?`
+    );
+
     db.transaction((posList: any[]) => {
       for (const pos of posList) {
         const rateData = rates.find(r => r.symbol === pos.symbol);
-        if (!rateData) continue;
+        if (!rateData) {
+          console.log('[Funding] No rate data for', pos.symbol, '— skipping');
+          continue;
+        }
 
-        const longRate = rateData[pos.long_exchange as keyof FundingRateEntry] as number | null;
+        // Each leg uses its OWN exchange's current live rate
+        const longRate  = rateData[pos.long_exchange  as keyof FundingRateEntry] as number | null;
         const shortRate = rateData[pos.short_exchange as keyof FundingRateEntry] as number | null;
 
+        // ── Cursor-based accrual ──────────────────────────────────────────────
+        // Use last_funding_accrual_time as the high-water mark.
+        // Every call advances this cursor to `now`, so only NEW complete intervals
+        // since the last call are credited — preventing double-counting.
+        // Critically: both legs are ALWAYS processed — one leg's result
+        // does NOT gate the other. This was the BUG 3 root cause.
+        const cursorMs  = pos.last_funding_accrual_time ?? pos.entry_time ?? now;
+        const elapsedMs = now - cursorMs;
+
+        if (elapsedMs < 60_000) {
+          // Less than 1 minute since last accrual — nothing new to process
+          continue;
+        }
+
+        const longIntervalMs  = (pos.long_funding_interval_hours  ?? 8) * 3_600_000;
+        const shortIntervalMs = (pos.short_funding_interval_hours ?? 8) * 3_600_000;
+
+        const longIntervals  = Math.floor(elapsedMs / longIntervalMs);
+        const shortIntervals = Math.floor(elapsedMs / shortIntervalMs);
+
+        if (longIntervals === 0 && shortIntervals === 0) {
+          advanceCursorStmt.run(now, pos.id);
+          continue;
+        }
+
+        const notional = pos.notional_per_leg as number;
+
+        // ── Long leg funding ──────────────────────────────────────────────────
+        // Standard perp convention:
+        //   rate > 0 → longs PAY shorts   → long leg pays
+        //   rate < 0 → shorts pay longs   → long leg RECEIVES
+        let longRcvDelta  = 0;
+        let longPaidDelta = 0;
+        if (longRate != null && longIntervals > 0) {
+          const amt = Math.abs(longRate) * notional * longIntervals;
+          if (longRate > 0) longPaidDelta = amt;
+          else              longRcvDelta  = amt;
+        }
+
+        // ── Short leg funding ─────────────────────────────────────────────────
+        // Standard perp convention:
+        //   rate > 0 → shorts RECEIVE from longs  → short leg receives
+        //   rate < 0 → shorts pay longs            → short leg pays
+        let shortRcvDelta  = 0;
+        let shortPaidDelta = 0;
+        if (shortRate != null && shortIntervals > 0) {
+          const amt = Math.abs(shortRate) * notional * shortIntervals;
+          if (shortRate > 0) shortRcvDelta  = amt;
+          else               shortPaidDelta = amt;
+        }
+
+        const totalIntervals = Math.max(longIntervals, shortIntervals);
+
         console.log(
-          '[Funding]', pos.symbol,
-          'longRate:', longRate,
-          'shortRate:', shortRate,
-          'longNext:', pos.long_next_funding_time,
-          'now:', now
+          '[Funding Accrual]', pos.symbol,
+          `long(${pos.long_exchange}) rate=${longRate} x${longIntervals}`,
+          `-> rcv+${longRcvDelta.toFixed(6)} paid+${longPaidDelta.toFixed(6)}`,
+          `| short(${pos.short_exchange}) rate=${shortRate} x${shortIntervals}`,
+          `-> rcv+${shortRcvDelta.toFixed(6)} paid+${shortPaidDelta.toFixed(6)}`
         );
 
-        // Emergency fallback requested by user: 
-        // If position has been open > 1 hour with NO funding, force accrue based on elapsed hours.
-        const oneHourMs = 3600_000;
-        const positionAge = now - pos.entry_time;
-        const noFundingReceived = (pos.long_funding_received === 0 && pos.long_funding_paid === 0 && pos.short_funding_received === 0 && pos.short_funding_paid === 0);
-
-        if (positionAge > oneHourMs && noFundingReceived) {
-          const elapsedHours = positionAge / 3600_000;
-          
-          const longInterval = pos.long_funding_interval_hours ?? 8;
-          const longIntervals = Math.floor(elapsedHours / longInterval);
-          
-          const shortInterval = pos.short_funding_interval_hours ?? 8;
-          const shortIntervals = Math.floor(elapsedHours / shortInterval);
-
-          if (longIntervals > 0 || shortIntervals > 0) {
-            let longRcv = 0, longPaid = 0;
-            let shortRcv = 0, shortPaid = 0;
-            
-            const longNotional = pos.notional_per_leg;
-            const shortNotional = pos.notional_per_leg;
-            
-            // If rate > 0, longs pay shorts
-            if (longRate != null && longIntervals > 0) {
-              const amt = Math.abs(longRate) * longNotional * longIntervals;
-              if (longRate > 0) longPaid += amt; else longRcv += amt;
-            }
-            if (shortRate != null && shortIntervals > 0) {
-              const amt = Math.abs(shortRate) * shortNotional * shortIntervals;
-              // If rate > 0, shorts receive from longs
-              if (shortRate > 0) shortRcv += amt; else shortPaid += amt;
-            }
-            
-            const totalIntervals = Math.max(longIntervals, shortIntervals);
-            
-            console.log(
-              '[Emergency Funding]', 
-              pos.symbol, 
-              'intervals:', totalIntervals,
-              'longRcv:', longRcv, 'longPaid:', longPaid,
-              'shortRcv:', shortRcv, 'shortPaid:', shortPaid
-            );
-
-            updateStmt.run(longRcv, longPaid, shortRcv, shortPaid, totalIntervals, now, pos.id);
-          }
-        }
+        // Always write and advance cursor so intervals are not re-counted.
+        updateStmt.run(
+          longRcvDelta,    // Δ long_funding_received
+          longPaidDelta,   // Δ long_funding_paid
+          longRcvDelta,    // for net: new long_funding_received = old + Δ
+          longPaidDelta,   // for net: new long_funding_paid     = old + Δ
+          shortRcvDelta,   // Δ short_funding_received
+          shortPaidDelta,  // Δ short_funding_paid
+          shortRcvDelta,   // for net: new short_funding_received = old + Δ
+          shortPaidDelta,  // for net: new short_funding_paid     = old + Δ
+          totalIntervals,
+          now,
+          pos.id
+        );
       }
     })(positions);
     

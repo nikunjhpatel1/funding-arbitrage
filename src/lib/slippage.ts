@@ -9,27 +9,56 @@ export interface SlippageResult {
   executionCostUSD: number;
   fullyFilled: boolean;
   filledNotional: number;
+  markPriceUsed: number;
+  classification: 'Positive Slippage' | 'Negative Slippage' | 'Neutral';
 }
 
 export function calculateSlippage(
   orderbook: OrderBook | null,
   side: 'buy' | 'sell',
-  targetNotionalUSD: number
+  targetNotionalUSD: number,
+  markPrice: number
 ): SlippageResult {
-  if (!orderbook || targetNotionalUSD <= 0) {
+  if (!orderbook || targetNotionalUSD <= 0 || !markPrice) {
     return {
       averageFillPrice: 0,
       slippagePercent: 0,
       executionCostUSD: 0,
       fullyFilled: false,
       filledNotional: 0,
+      markPriceUsed: markPrice || 0,
+      classification: 'Neutral',
+    };
+  }
+
+  let dynamicMarkPrice = markPrice;
+  
+  // Ensure strict ordering just in case API returns unsorted data
+  const bids = orderbook.bids ? [...orderbook.bids].sort((a, b) => b[0] - a[0]) : []; // Descending
+  const asks = orderbook.asks ? [...orderbook.asks].sort((a, b) => a[0] - b[0]) : []; // Ascending
+
+  if (bids.length > 0 && asks.length > 0) {
+    const bestBid = bids[0][0];
+    const bestAsk = asks[0][0];
+    dynamicMarkPrice = (bestBid + bestAsk) / 2;
+  }
+
+  if (!dynamicMarkPrice) {
+    return {
+      averageFillPrice: 0,
+      slippagePercent: 0,
+      executionCostUSD: 0,
+      fullyFilled: false,
+      filledNotional: 0,
+      markPriceUsed: 0,
+      classification: 'Neutral',
     };
   }
 
   // Determine which side of the book to cross
   // Buy -> cross the asks (we buy from sellers)
   // Sell -> cross the bids (we sell to buyers)
-  const levels = side === 'buy' ? orderbook.asks : orderbook.bids;
+  const levels = side === 'buy' ? asks : bids;
   
   if (!levels || levels.length === 0) {
     return {
@@ -38,6 +67,8 @@ export function calculateSlippage(
       executionCostUSD: 0,
       fullyFilled: false,
       filledNotional: 0,
+      markPriceUsed: dynamicMarkPrice,
+      classification: 'Neutral',
     };
   }
 
@@ -50,6 +81,8 @@ export function calculateSlippage(
       executionCostUSD: 0,
       fullyFilled: false,
       filledNotional: 0,
+      markPriceUsed: dynamicMarkPrice,
+      classification: 'Neutral',
     };
   }
 
@@ -85,25 +118,33 @@ export function calculateSlippage(
       executionCostUSD: 0,
       fullyFilled: false,
       filledNotional: 0,
+      markPriceUsed: dynamicMarkPrice,
+      classification: 'Neutral',
     };
   }
 
   const averageFillPrice = totalCostQuote / totalCostBase;
   
-  // Calculate slippage relative to the best price
-  // For buy: slippage = (avgFillPrice - bestPrice) / bestPrice
-  // For sell: slippage = (bestPrice - avgFillPrice) / bestPrice
+  // Calculate slippage relative to the dynamically calculated mark price
   let slippagePercent = 0;
   if (side === 'buy') {
-    slippagePercent = ((averageFillPrice - bestPrice) / bestPrice) * 100;
+    slippagePercent = ((averageFillPrice - dynamicMarkPrice) / dynamicMarkPrice) * 100;
   } else {
-    slippagePercent = ((bestPrice - averageFillPrice) / bestPrice) * 100;
+    slippagePercent = ((dynamicMarkPrice - averageFillPrice) / dynamicMarkPrice) * 100;
   }
 
-  // Execution cost in USD is the notional difference
-  // Buy: we pay more quote currency
-  // Sell: we receive less quote currency
-  const executionCostUSD = (slippagePercent / 100) * filledNotional;
+  // Execution cost in USD
+  const quantity = totalCostBase; // Amount filled in base asset
+  let executionCostUSD = 0;
+  if (side === 'buy') {
+    executionCostUSD = (averageFillPrice - dynamicMarkPrice) * quantity;
+  } else {
+    executionCostUSD = (dynamicMarkPrice - averageFillPrice) * quantity;
+  }
+  
+  let classification: 'Positive Slippage' | 'Negative Slippage' | 'Neutral' = 'Neutral';
+  if (executionCostUSD > 0) classification = 'Positive Slippage';
+  else if (executionCostUSD < 0) classification = 'Negative Slippage';
 
   return {
     averageFillPrice,
@@ -111,5 +152,7 @@ export function calculateSlippage(
     executionCostUSD,
     fullyFilled,
     filledNotional,
+    markPriceUsed: dynamicMarkPrice,
+    classification,
   };
 }
