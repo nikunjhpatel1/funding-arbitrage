@@ -31,21 +31,24 @@ export async function POST(req: Request) {
       endDate, 
       initialCapital, 
       leverage, 
-      minSpreadPct, 
+      longExchange,
+      shortExchange,
       closeSpreadPct, 
       slippagePct 
     } = body;
+
+    if (!longExchange || !shortExchange) {
+      return NextResponse.json({ error: 'longExchange and shortExchange are required' }, { status: 400 });
+    }
 
     const parseDate = (dStr: string) => {
       if (!dStr) return 0;
       const parts = dStr.split('-');
       if (parts.length === 3) {
-        // Handle YYYY-MM-DD from <input type="date">
         if (parts[0].length === 4) {
           const [yyyy, mm, dd] = parts;
           return new Date(Number(yyyy), Number(mm) - 1, Number(dd)).getTime();
         }
-        // Handle DD-MM-YYYY from curl/manual testing
         const [dd, mm, yyyy] = parts;
         return new Date(Number(yyyy), Number(mm) - 1, Number(dd)).getTime();
       }
@@ -54,11 +57,20 @@ export async function POST(req: Request) {
     const startTs = parseDate(startDate);
     const endTs = parseDate(endDate);
 
-    // Format symbol: if user sends 'BTCUSDT' (no slash), convert to 'BTC/USDT'
-    let dbSymbol = symbol;
-    if (!dbSymbol.includes('/') && dbSymbol.endsWith('USDT')) {
-      dbSymbol = dbSymbol.replace(/USDT$/, '/USDT');
+    // ── Symbol normalization ─────────────────────────────────────────────────
+    let dbSymbol = (symbol as string).trim().toUpperCase();
+
+    if (!dbSymbol.includes('/')) {
+      const quotes = ['USDT', 'USDC', 'BTC', 'ETH', 'BNB', 'BUSD'];
+      for (const q of quotes) {
+        if (dbSymbol.endsWith(q)) {
+          dbSymbol = dbSymbol.slice(0, -q.length) + '/' + q;
+          break;
+        }
+      }
     }
+
+    console.log(`[Backtest] symbol="${symbol}" → normalized="${dbSymbol}", range=${startTs}–${endTs}`);
 
     // 1. Fetch historical data
     const rows = db.prepare(`
@@ -68,7 +80,17 @@ export async function POST(req: Request) {
     `).all(dbSymbol, startTs, endTs) as any[];
 
     if (rows.length === 0) {
-      return NextResponse.json({ error: 'No historical data found for this period.' }, { status: 400 });
+      const available = db
+        .prepare(`SELECT DISTINCT symbol FROM funding_rate_history WHERE recorded_at >= ? AND recorded_at <= ? LIMIT 10`)
+        .all(startTs, endTs) as { symbol: string }[];
+      const sample = available.map(r => r.symbol).join(', ');
+      return NextResponse.json(
+        {
+          error: `No historical data found for "${dbSymbol}" between ${startDate} and ${endDate}.\n` +
+                 `Available symbols in this date range (sample): ${sample || 'none — the date range may be outside the recorded history.'}`,
+        },
+        { status: 400 },
+      );
     }
 
     // 2. Group by recorded_at
@@ -83,226 +105,201 @@ export async function POST(req: Request) {
     // 3. Backtest State
     let equity = Number(initialCapital);
     let peakEquity = equity;
-    let currentPosition: any = null;
     
-    const tradeLog: any[] = [];
-    const equityCurve: any[] = [];
-
-    // Metrics
-    let totalFundingEarned = 0;
-    let totalFundingPaid = 0;
-    let totalFees = 0;
-    let winningTrades = 0;
-    let losingTrades = 0;
-    let grossProfit = 0;
-    let grossLoss = 0;
-    let maxDrawdown = 0;
-
+    // Position state
+    let entryLongPrice = 0;
+    let entryShortPrice = 0;
+    let notional = 0;
+    let positionOpen = false;
+    let isClosed = false; // flag to stop further simulation after early exit
+    
+    let cumFundingReceived = 0;
+    let cumFundingPaid = 0;
+    let totalExecCost = 0;
+    
     let lastTime = timestamps[0];
+
+    const chartData: any[] = [];
+    const tradeLog: any[] = [];
 
     // 4. Simulation Loop
     for (const t of timestamps) {
+      if (isClosed) break; // if position was closed early via closeSpreadPct, stop
+
       const snapshot = snapshots[t];
+      const longData = snapshot[longExchange];
+      const shortData = snapshot[shortExchange];
+
+      // We need data for both exchanges to proceed (or we use last known rate if we wanted, but strict is safer)
+      // For now, skip timestamps where one exchange is missing.
+      if (!longData || !shortData) continue;
+
       const dtHours = (t - lastTime) / 3600000;
       lastTime = t;
 
-      const exchanges = Object.keys(snapshot);
-      if (exchanges.length < 2) continue;
+      const longRate = longData.funding_rate;
+      const shortRate = shortData.funding_rate;
+      const longInterval = longData.funding_interval_hours || 8;
+      const shortInterval = shortData.funding_interval_hours || 8;
+      
+      const longPrice = longData.price;
+      const shortPrice = shortData.price;
+
+      // Handle invalid $0 prices
+      if (longPrice <= 0 || shortPrice <= 0) {
+        continue; // Skip invalid prices
+      }
+
+      // Calculate spread in BPS
+      const spreadBps = (shortRate - longRate) * 10000;
+      const annualizedSpread = (shortRate * (8760 / shortInterval) * 100) - (longRate * (8760 / longInterval) * 100);
+
+      if (!positionOpen) {
+        // Enter Position
+        entryLongPrice = longPrice;
+        entryShortPrice = shortPrice;
+        notional = equity * leverage;
+        
+        const entryFeesLong = notional * (TAKER_FEES[longExchange] ?? 0.0006);
+        const entryFeesShort = notional * (TAKER_FEES[shortExchange] ?? 0.0006);
+        const entrySlippage = notional * (slippagePct / 100) * 2;
+        const entryCost = entryFeesLong + entryFeesShort + entrySlippage;
+
+        totalExecCost += entryCost;
+        equity -= entryCost;
+        
+        positionOpen = true;
+
+        chartData.push({
+          timestamp: t,
+          longRate,
+          shortRate,
+          spreadBps,
+          annualizedSpread,
+          equity,
+          cumNetPnL: equity - initialCapital,
+          cumLongPnL: 0,
+          cumShortPnL: 0
+        });
+
+        tradeLog.push({
+          timestamp: t,
+          longRate,
+          shortRate,
+          spreadBps,
+          fundingEventPnL: 0,
+          cumNetPnL: equity - initialCapital,
+          event: 'ENTRY'
+        });
+        
+        continue;
+      }
 
       // Continuous funding accrual
-      if (currentPosition && dtHours > 0) {
-        const longEx = currentPosition.long_exchange;
-        const shortEx = currentPosition.short_exchange;
-        
-        const longData = snapshot[longEx] || currentPosition.last_long_data;
-        const shortData = snapshot[shortEx] || currentPosition.last_short_data;
-
-        if (longData) currentPosition.last_long_data = longData;
-        if (shortData) currentPosition.last_short_data = shortData;
-
-        // Approximate funding accrual
-        const longInterval = longData?.funding_interval_hours || 8;
-        const shortInterval = shortData?.funding_interval_hours || 8;
-
-        const longRate = longData?.funding_rate ?? 0;
-        const shortRate = shortData?.funding_rate ?? 0;
-
-        const notional = currentPosition.notional;
-
+      let fundingEventPnL = 0;
+      if (dtHours > 0) {
         const longFundingAmt = (dtHours / longInterval) * longRate * notional;
         const shortFundingAmt = (dtHours / shortInterval) * shortRate * notional;
 
         // Long leg receives funding if rate < 0, pays if rate > 0
-        currentPosition.long_funding -= longFundingAmt; 
         if (longFundingAmt < 0) {
-          totalFundingEarned += Math.abs(longFundingAmt);
+          cumFundingReceived += Math.abs(longFundingAmt);
+          fundingEventPnL += Math.abs(longFundingAmt);
         } else {
-          totalFundingPaid += Math.abs(longFundingAmt);
+          cumFundingPaid += Math.abs(longFundingAmt);
+          fundingEventPnL -= Math.abs(longFundingAmt);
         }
 
         // Short leg receives funding if rate > 0, pays if rate < 0
-        currentPosition.short_funding += shortFundingAmt;
         if (shortFundingAmt > 0) {
-          totalFundingEarned += Math.abs(shortFundingAmt);
+          cumFundingReceived += Math.abs(shortFundingAmt);
+          fundingEventPnL += Math.abs(shortFundingAmt);
         } else {
-          totalFundingPaid += Math.abs(shortFundingAmt);
-        }
-
-        // Check Exit Condition
-        // Annualized spread
-        const annualizedSpread = (shortRate * (8760 / shortInterval) * 100) - (longRate * (8760 / longInterval) * 100);
-
-        if (annualizedSpread <= closeSpreadPct) {
-          // Close Position
-          const exitLongPrice = longData?.price || snapshot['binance']?.price || currentPosition.entry_long_price || 1;
-          const exitShortPrice = shortData?.price || snapshot['binance']?.price || currentPosition.entry_short_price || 1;
-
-          const longPricePnl = ((exitLongPrice - currentPosition.entry_long_price) / currentPosition.entry_long_price) * notional;
-          const shortPricePnl = ((currentPosition.entry_short_price - exitShortPrice) / currentPosition.entry_short_price) * notional;
-          
-          const exitFeesLong = notional * (TAKER_FEES[longEx] ?? 0.0006);
-          const exitFeesShort = notional * (TAKER_FEES[shortEx] ?? 0.0006);
-          const exitSlippage = notional * (slippagePct / 100) * 2;
-          
-          const exitCost = exitFeesLong + exitFeesShort + exitSlippage;
-          totalFees += exitCost;
-
-          const tradeNet = longPricePnl + shortPricePnl + currentPosition.long_funding + currentPosition.short_funding - currentPosition.entry_cost - exitCost;
-          
-          equity += tradeNet;
-
-          if (tradeNet > 0) {
-            winningTrades++;
-            grossProfit += tradeNet;
-          } else {
-            losingTrades++;
-            grossLoss += Math.abs(tradeNet);
-          }
-
-          tradeLog.push({
-            entryTime: currentPosition.entry_time,
-            exitTime: t,
-            longExchange: longEx,
-            shortExchange: shortEx,
-            notional,
-            netPnL: tradeNet,
-            fundingNet: currentPosition.long_funding + currentPosition.short_funding,
-            feesNet: currentPosition.entry_cost + exitCost,
-            pricePnlNet: longPricePnl + shortPricePnl
-          });
-
-          currentPosition = null;
+          cumFundingPaid += Math.abs(shortFundingAmt);
+          fundingEventPnL -= Math.abs(shortFundingAmt);
         }
       }
 
-      // Entry Condition
-      if (!currentPosition) {
-        let bestSpread = -Infinity;
-        let bestLongEx = '';
-        let bestShortEx = '';
+      // Price PnL
+      const longPricePnl = ((longPrice - entryLongPrice) / entryLongPrice) * notional;
+      const shortPricePnl = ((entryShortPrice - shortPrice) / entryShortPrice) * notional;
+      const currentPricePnl = longPricePnl + shortPricePnl;
 
-        for (let i = 0; i < exchanges.length; i++) {
-          for (let j = 0; j < exchanges.length; j++) {
-            if (i === j) continue;
-            const exLong = exchanges[i];
-            const exShort = exchanges[j];
+      const currentNetFunding = cumFundingReceived - cumFundingPaid;
+      
+      // Current equity BEFORE exit costs
+      let currentEquity = initialCapital - totalExecCost + currentNetFunding + currentPricePnl;
 
-            const longRate = snapshot[exLong].funding_rate;
-            const longInterval = snapshot[exLong].funding_interval_hours || 8;
-            
-            const shortRate = snapshot[exShort].funding_rate;
-            const shortInterval = snapshot[exShort].funding_interval_hours || 8;
-
-            if (longRate == null || shortRate == null) continue;
-
-            // Longing the lowest rate, Shorting the highest rate
-            const annSpread = (shortRate * (8760 / shortInterval) * 100) - (longRate * (8760 / longInterval) * 100);
-
-            if (annSpread > bestSpread) {
-              bestSpread = annSpread;
-              bestLongEx = exLong;
-              bestShortEx = exShort;
-            }
-          }
-        }
-
-        if (bestSpread >= minSpreadPct && bestLongEx && bestShortEx) {
-          // Fixed size based on initial capital to avoid compounding complexities unless requested
-          const notional = equity * leverage;
-          
-          const entryFeesLong = notional * (TAKER_FEES[bestLongEx] ?? 0.0006);
-          const entryFeesShort = notional * (TAKER_FEES[bestShortEx] ?? 0.0006);
-          const entrySlippage = notional * (slippagePct / 100) * 2;
-          const entryCost = entryFeesLong + entryFeesShort + entrySlippage;
-
-          totalFees += entryCost;
-
-          currentPosition = {
-            entry_time: t,
-            long_exchange: bestLongEx,
-            short_exchange: bestShortEx,
-            notional,
-            entry_long_price: snapshot[bestLongEx].price || snapshot['binance']?.price || 1,
-            entry_short_price: snapshot[bestShortEx].price || snapshot['binance']?.price || 1,
-            long_funding: 0,
-            short_funding: 0,
-            entry_cost: entryCost,
-            last_long_data: snapshot[bestLongEx],
-            last_short_data: snapshot[bestShortEx]
-          };
-        }
+      // Check early exit condition
+      let exitTriggered = false;
+      if (closeSpreadPct > 0 && annualizedSpread <= closeSpreadPct) {
+        exitTriggered = true;
+        isClosed = true;
       }
 
-      // Equity curve calculation
-      let currentEquity = equity;
-      if (currentPosition) {
-        const exitLongPrice = snapshot[currentPosition.long_exchange]?.price || snapshot['binance']?.price || currentPosition.entry_long_price || 1;
-        const exitShortPrice = snapshot[currentPosition.short_exchange]?.price || snapshot['binance']?.price || currentPosition.entry_short_price || 1;
-
-        const longPricePnl = ((exitLongPrice - currentPosition.entry_long_price) / currentPosition.entry_long_price) * currentPosition.notional;
-        const shortPricePnl = ((currentPosition.entry_short_price - exitShortPrice) / currentPosition.entry_short_price) * currentPosition.notional;
+      if (exitTriggered) {
+        // Apply exit costs
+        const exitFeesLong = notional * (TAKER_FEES[longExchange] ?? 0.0006);
+        const exitFeesShort = notional * (TAKER_FEES[shortExchange] ?? 0.0006);
+        const exitSlippage = notional * (slippagePct / 100) * 2;
+        const exitCost = exitFeesLong + exitFeesShort + exitSlippage;
         
-        currentEquity += longPricePnl + shortPricePnl + currentPosition.long_funding + currentPosition.short_funding - currentPosition.entry_cost;
+        totalExecCost += exitCost;
+        currentEquity -= exitCost;
       }
 
-      if (currentEquity > peakEquity) peakEquity = currentEquity;
-      const drawdown = ((peakEquity - currentEquity) / peakEquity) * 100;
-      if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+      equity = currentEquity;
+      if (equity > peakEquity) peakEquity = equity;
 
-      equityCurve.push({
+      chartData.push({
         timestamp: t,
-        equity: currentEquity
+        longRate,
+        shortRate,
+        spreadBps,
+        annualizedSpread,
+        equity,
+        cumNetPnL: equity - initialCapital,
+        cumLongPnL: longPricePnl + currentNetFunding / 2, // approximation for chart
+        cumShortPnL: shortPricePnl + currentNetFunding / 2
       });
+
+      if (fundingEventPnL !== 0 || exitTriggered) {
+        tradeLog.push({
+          timestamp: t,
+          longRate,
+          shortRate,
+          spreadBps,
+          fundingEventPnL,
+          cumNetPnL: equity - initialCapital,
+          event: exitTriggered ? 'EXIT' : 'ACCRUAL'
+        });
+      }
     }
 
     // Force close at end if still open
-    if (currentPosition) {
-      const exitCost = currentPosition.notional * (TAKER_FEES[currentPosition.long_exchange] ?? 0.0006) + 
-                       currentPosition.notional * (TAKER_FEES[currentPosition.short_exchange] ?? 0.0006) + 
-                       currentPosition.notional * (slippagePct / 100) * 2;
-      totalFees += exitCost;
+    if (positionOpen && !isClosed) {
+      const lastSnapshot = chartData[chartData.length - 1];
+      const exitFeesLong = notional * (TAKER_FEES[longExchange] ?? 0.0006);
+      const exitFeesShort = notional * (TAKER_FEES[shortExchange] ?? 0.0006);
+      const exitSlippage = notional * (slippagePct / 100) * 2;
+      const exitCost = exitFeesLong + exitFeesShort + exitSlippage;
       
-      const tradeNet = currentPosition.long_funding + currentPosition.short_funding - currentPosition.entry_cost - exitCost;
-      equity += tradeNet;
-
-      if (tradeNet > 0) {
-        winningTrades++;
-        grossProfit += tradeNet;
-      } else {
-        losingTrades++;
-        grossLoss += Math.abs(tradeNet);
+      totalExecCost += exitCost;
+      equity -= exitCost;
+      
+      if (lastSnapshot) {
+        lastSnapshot.equity = equity;
+        lastSnapshot.cumNetPnL = equity - initialCapital;
       }
-      
+
       tradeLog.push({
-        entryTime: currentPosition.entry_time,
-        exitTime: timestamps[timestamps.length - 1],
-        longExchange: currentPosition.long_exchange,
-        shortExchange: currentPosition.short_exchange,
-        notional: currentPosition.notional,
-        netPnL: tradeNet,
-        fundingNet: currentPosition.long_funding + currentPosition.short_funding,
-        feesNet: currentPosition.entry_cost + exitCost,
-        pricePnlNet: 0
+        timestamp: lastTime,
+        longRate: lastSnapshot?.longRate ?? 0,
+        shortRate: lastSnapshot?.shortRate ?? 0,
+        spreadBps: lastSnapshot?.spreadBps ?? 0,
+        fundingEventPnL: 0,
+        cumNetPnL: equity - initialCapital,
+        event: 'EXIT'
       });
     }
 
@@ -311,32 +308,33 @@ export async function POST(req: Request) {
     
     const daysElapsed = (endTs - startTs) / (1000 * 60 * 60 * 24);
     const yearsElapsed = daysElapsed / 365;
-    const cagr = yearsElapsed > 0 ? (Math.pow(equity / initialCapital, 1 / yearsElapsed) - 1) * 100 : 0;
+    const cagr = yearsElapsed > 0 ? (Math.pow(Math.max(equity / initialCapital, 0), 1 / yearsElapsed) - 1) * 100 : 0;
     
-    const winRate = (winningTrades + losingTrades) > 0 ? (winningTrades / (winningTrades + losingTrades)) * 100 : 0;
-    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? Infinity : 0);
+    // We don't have separate "trades" in the same way, we just have one continuous position
+    const maxDrawdown = peakEquity > 0 ? ((peakEquity - Math.min(...chartData.map(d => d.equity))) / peakEquity) * 100 : 0;
 
-    // Sharpe ratio estimation (Risk free rate ~ 0)
-    // We can approximate it from the equity curve variance, but for now simple proxy:
-    // Annualized Return / (Max Drawdown / 2) -> just an approximation
-    const sharpeRatio = (cagr / (maxDrawdown || 1)).toFixed(2);
+    const sharpeRatio = maxDrawdown > 0 ? (cagr / (maxDrawdown / 2)).toFixed(2) : '0.00';
+    
+    // Calculate final price PnL
+    const lastPoint = chartData[chartData.length - 1];
+    const finalPricePnl = lastPoint ? (lastPoint.cumLongPnL + lastPoint.cumShortPnL - (cumFundingReceived - cumFundingPaid)) : 0; // approximation
+    // Let's accurately calculate it: Total PnL = Funding PnL + Price PnL - Fees
+    // Therefore Price PnL = Total PnL - Funding PnL + Fees
+    const exactPricePnL = totalProfit - (cumFundingReceived - cumFundingPaid) + totalExecCost;
 
     return NextResponse.json({
       metrics: {
         totalProfit,
-        totalFundingEarned,
-        totalFundingPaid,
-        totalFees,
+        totalFundingPnL: cumFundingReceived - cumFundingPaid,
+        totalPricePnL: exactPricePnL,
+        totalExecCost,
         roi,
         cagr,
-        winRate,
-        profitFactor,
         maxDrawdown,
-        sharpeRatio: Number(sharpeRatio),
-        tradesCount: winningTrades + losingTrades
+        sharpeRatio: Number(sharpeRatio) || 0
       },
-      equityCurve,
-      tradeLog: tradeLog.sort((a, b) => b.exitTime - a.exitTime) // latest first
+      chartData,
+      tradeLog: tradeLog.sort((a, b) => b.timestamp - a.timestamp) // latest first
     });
 
   } catch (error: unknown) {
