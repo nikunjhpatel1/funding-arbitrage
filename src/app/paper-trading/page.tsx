@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Activity, Wallet, History, AlertTriangle, ArrowRightLeft, Target, Trophy, ChevronDown, ChevronUp, Zap, TrendingUp, TrendingDown } from 'lucide-react';
 import type { PaperPosition } from '@/app/api/paper-trading/route';
 import { type OrderBook, calculateSlippage } from '@/lib/slippage';
+import SymbolSearch from '@/components/SymbolSearch';
 
 const TAKER_FEES: Record<string, number> = {
   binance:     0.0004,
@@ -197,12 +198,7 @@ export default function PaperTradingPage() {
   const [capital, setCapital]           = useState(1000);
   const [leverage, setLeverage]         = useState(5);
 
-  // Autocomplete
-  const [allSymbols, setAllSymbols]     = useState<string[]>([]);
-  const [searchQuery, setSearchQuery]   = useState('BTC/USDT');
-  const [suggestions, setSuggestions]   = useState<string[]>([]);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [activeSuggestionIndex, setActiveSuggestionIndex] = useState(0);
+  // Autocomplete — handled by <SymbolSearch> component
 
   // Slippage / orderbook
   const [orderbooks, setOrderbooks]     = useState<Record<string, OrderBook>>({});
@@ -259,7 +255,7 @@ export default function PaperTradingPage() {
       const json = await res.json();
       if (json.data) {
         setMarketData(json.data);
-        setAllSymbols(json.data.map((d: any) => d.symbol));
+        // Note: allSymbols is now handled inside <SymbolSearch>
       }
     } catch (e) {
       console.error('Failed to fetch symbols', e);
@@ -318,23 +314,6 @@ export default function PaperTradingPage() {
     if (short) setShortExchange(short);
   }, []);
 
-  // ── Autocomplete handlers ──────────────────────────────────────────────────
-  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = e.target.value;
-    setSearchQuery(v); setSymbol(v);
-    setSuggestions(allSymbols.filter(s => s.toLowerCase().includes(v.toLowerCase()) || s.split('/')[0].toLowerCase().includes(v.toLowerCase())).slice(0, 10));
-    setShowSuggestions(true); setActiveSuggestionIndex(0);
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'ArrowDown' && activeSuggestionIndex < suggestions.length - 1) setActiveSuggestionIndex(i => i + 1);
-    else if (e.key === 'ArrowUp' && activeSuggestionIndex > 0) setActiveSuggestionIndex(i => i - 1);
-    else if (e.key === 'Enter' && showSuggestions && suggestions.length > 0) {
-      e.preventDefault(); setSearchQuery(suggestions[activeSuggestionIndex]); setSymbol(suggestions[activeSuggestionIndex]); setShowSuggestions(false);
-    } else if (e.key === 'Escape') setShowSuggestions(false);
-  };
-
-  const selectSuggestion = (s: string) => { setSearchQuery(s); setSymbol(s); setShowSuggestions(false); };
 
   // ── Open / Close position ──────────────────────────────────────────────────
   const openPosition = async (e: React.FormEvent) => {
@@ -495,26 +474,15 @@ export default function PaperTradingPage() {
             <ArrowRightLeft size={18} color="var(--accent-blue)" /> Open Trade
           </h2>
           <form onSubmit={openPosition} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {/* Symbol */}
-            <div style={{ position: 'relative' }}>
+            {/* Symbol — reusable SymbolSearch component */}
+            <div>
               <label style={{ display: 'block', fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: 6 }}>Symbol</label>
-              <input
-                type="text" value={searchQuery} onChange={handleSearchChange} onKeyDown={handleKeyDown}
-                onFocus={() => { if (searchQuery && allSymbols.length > 0) { setSuggestions(allSymbols.filter(s => s.toLowerCase().includes(searchQuery.toLowerCase())).slice(0, 10)); setShowSuggestions(true); } }}
-                onBlur={() => { setTimeout(() => setShowSuggestions(false), 200); }}
-                placeholder="Search symbol" required
-                style={{ width: '100%', background: 'var(--bg-deep)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '10px 12px', borderRadius: 8, outline: 'none' }}
+              <SymbolSearch
+                value={symbol}
+                onChange={(s) => setSymbol(s)}
+                placeholder="Search symbol…"
+                inputStyle={{ background: 'var(--bg-deep)', border: '1px solid var(--border)', color: 'var(--text-primary)', padding: '10px 12px', borderRadius: 8, outline: 'none' }}
               />
-              {showSuggestions && suggestions.length > 0 && (
-                <ul style={{ position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 10, background: 'var(--bg-card)', border: '1px solid var(--border)', borderRadius: 8, marginTop: 4, padding: 0, listStyle: 'none', maxHeight: 200, overflowY: 'auto', boxShadow: '0 4px 12px rgba(0,0,0,0.5)' }}>
-                  {suggestions.map((s, idx) => (
-                    <li key={s} onClick={() => selectSuggestion(s)} onMouseEnter={() => setActiveSuggestionIndex(idx)}
-                      style={{ padding: '10px 12px', cursor: 'pointer', fontSize: '0.9rem', background: idx === activeSuggestionIndex ? 'rgba(59,130,246,0.1)' : 'transparent', color: idx === activeSuggestionIndex ? 'var(--accent-blue)' : 'var(--text-primary)' }}>
-                      {s}
-                    </li>
-                  ))}
-                </ul>
-              )}
             </div>
 
             {/* Exchange selects */}
