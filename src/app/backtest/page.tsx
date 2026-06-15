@@ -172,7 +172,7 @@ export default function BacktestPage() {
                       <Tooltip 
                         contentStyle={{ background: 'var(--bg-deep)', border: '1px solid var(--border)', borderRadius: 8, color: '#fff' }}
                         itemStyle={{ color: 'var(--accent-blue)', fontWeight: 700 }}
-                        formatter={(value: number) => [`$${value.toFixed(2)}`, 'Equity']}
+                        formatter={(value: any) => [`$${Number(value).toFixed(2)}`, 'Equity']}
                         labelStyle={{ color: 'var(--text-muted)', marginBottom: 5 }}
                       />
                       <Line type="monotone" dataKey="equity" stroke="var(--accent-blue)" strokeWidth={3} dot={false} activeDot={{ r: 6, fill: 'var(--accent-blue)', stroke: 'var(--bg-deep)', strokeWidth: 2 }} />

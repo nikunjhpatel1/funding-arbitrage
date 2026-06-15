@@ -20,6 +20,7 @@ export type PaperPosition = {
   long_mark_price?: number;
   long_fill_price?: number;
   long_slippage?: number;
+  long_slippage_cost?: number;
   long_close_price: number | null;
   long_funding: number;          // Net: positive = received, negative = paid
   long_funding_received: number; // Gross received
@@ -35,6 +36,7 @@ export type PaperPosition = {
   short_mark_price?: number;
   short_fill_price?: number;
   short_slippage?: number;
+  short_slippage_cost?: number;
   short_close_price: number | null;
   short_funding: number;          // Net: positive = received, negative = paid
   short_funding_received: number; // Gross received
@@ -140,17 +142,17 @@ export async function POST(req: Request) {
     const notionalPerLeg = capital * leverage;
 
     // Calculate slippage using the orderbooks
-    const longSlippageResult = calculateSlippage(longOrderbook, 'buy', notionalPerLeg);
-    const shortSlippageResult = calculateSlippage(shortOrderbook, 'sell', notionalPerLeg);
+    const longSlippageResult = calculateSlippage(longOrderbook, 'buy', notionalPerLeg, longMarkPrice);
+    const shortSlippageResult = calculateSlippage(shortOrderbook, 'sell', notionalPerLeg, shortMarkPrice);
 
     const longFillPrice = longSlippageResult.fullyFilled && longSlippageResult.averageFillPrice > 0 
       ? longSlippageResult.averageFillPrice 
-      : longMarkPrice;
+      : longSlippageResult.markPriceUsed || longMarkPrice;
     const longSlippagePct = longSlippageResult.fullyFilled ? longSlippageResult.slippagePercent : null;
 
     const shortFillPrice = shortSlippageResult.fullyFilled && shortSlippageResult.averageFillPrice > 0 
       ? shortSlippageResult.averageFillPrice 
-      : shortMarkPrice;
+      : shortSlippageResult.markPriceUsed || shortMarkPrice;
     const shortSlippagePct = shortSlippageResult.fullyFilled ? shortSlippageResult.slippagePercent : null;
 
     console.log('[Open Position]', {
@@ -190,20 +192,20 @@ export async function POST(req: Request) {
         id, symbol, capital, leverage, notional_per_leg,
         entry_time, status, 
         long_exchange, long_entry_price, long_fees, long_next_funding_time, long_funding_interval_hours, long_rate_at_entry,
-        long_mark_price, long_fill_price, long_slippage,
+        long_mark_price, long_fill_price, long_slippage, long_slippage_cost,
         short_exchange, short_entry_price, short_fees, short_next_funding_time, short_funding_interval_hours, short_rate_at_entry,
-        short_mark_price, short_fill_price, short_slippage,
+        short_mark_price, short_fill_price, short_slippage, short_slippage_cost,
         last_funding_accrual_time, funding_events_count, long_funding, short_funding
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
       id, symbol, capital, leverage, notionalPerLeg,
       entryTime, 'OPEN',
       longExchange, longFillPrice, longFee, longNextTime || null, longIntervalHours || 8, longRateAtEntry || 0,
-      longMarkPrice, longFillPrice, longSlippagePct,
+      longSlippageResult.markPriceUsed || longMarkPrice, longFillPrice, longSlippagePct, longSlippageResult.fullyFilled ? longSlippageResult.executionCostUSD : 0,
       shortExchange, shortFillPrice, shortFee, shortNextTime || null, shortIntervalHours || 8, shortRateAtEntry || 0,
-      shortMarkPrice, shortFillPrice, shortSlippagePct,
+      shortSlippageResult.markPriceUsed || shortMarkPrice, shortFillPrice, shortSlippagePct, shortSlippageResult.fullyFilled ? shortSlippageResult.executionCostUSD : 0,
       entryTime, 0, 0, 0
     );
 

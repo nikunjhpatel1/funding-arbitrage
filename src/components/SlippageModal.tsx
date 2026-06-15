@@ -66,8 +66,8 @@ export default function SlippageModal({ row, positionSize, onClose, activeExchan
   const lOb = longExchange ? orderbooks[longExchange.key] : null;
   const sOb = shortExchange ? orderbooks[shortExchange.key] : null;
 
-  const longSlip = calculateSlippage(lOb, 'buy', targetNotional);
-  const shortSlip = calculateSlippage(sOb, 'sell', targetNotional);
+  const longSlip = calculateSlippage(lOb, 'buy', targetNotional, row.price);
+  const shortSlip = calculateSlippage(sOb, 'sell', targetNotional, row.price);
 
   const netEntryCost = longSlip.executionCostUSD + shortSlip.executionCostUSD;
   const netExitCost = netEntryCost; // Approx
