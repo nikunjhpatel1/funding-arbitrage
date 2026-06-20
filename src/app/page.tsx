@@ -64,6 +64,12 @@ export default function HomePage() {
   const [positionSize, setPositionSize] = useState<number>(1000);
 
   useEffect(() => {
+    console.log('[DEBUG] page.tsx rendered. enrichedData.length:', enrichedData.length);
+  });
+
+  const [isCustomPositionSize, setIsCustomPositionSize] = useState(false);
+
+  useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setMounted(true);
   }, []);
@@ -156,18 +162,42 @@ export default function HomePage() {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--bg-card)', padding: '6px 12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
           <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Est. Position Size:</span>
-          <select 
-            value={positionSize} 
-            onChange={e => setPositionSize(Number(e.target.value))}
-            style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', fontWeight: 600, cursor: 'pointer' }}
-          >
-            <option value="100">$100</option>
-            <option value="500">$500</option>
-            <option value="1000">$1,000</option>
-            <option value="5000">$5,000</option>
-            <option value="10000">$10,000</option>
-            <option value="25000">$25,000</option>
-          </select>
+          {isCustomPositionSize ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{ color: 'var(--text-muted)' }}>$</span>
+              <input 
+                type="number"
+                value={positionSize} 
+                onChange={e => setPositionSize(Number(e.target.value) || 0)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', fontWeight: 600, width: '80px' }}
+                autoFocus
+              />
+              <button onClick={() => setIsCustomPositionSize(false)} style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: '0 4px', display: 'flex', alignItems: 'center' }}>
+                <XCircle size={14}/>
+              </button>
+            </div>
+          ) : (
+            <select 
+              value={positionSize} 
+              onChange={e => {
+                if (e.target.value === 'custom') {
+                  setIsCustomPositionSize(true);
+                } else {
+                  setPositionSize(Number(e.target.value));
+                }
+              }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--text-primary)', outline: 'none', fontWeight: 600, cursor: 'pointer' }}
+            >
+              <option value="1000">$1,000</option>
+              <option value="5000">$5,000</option>
+              <option value="10000">$10,000</option>
+              <option value="25000">$25,000</option>
+              {!['1000', '5000', '10000', '25000'].includes(positionSize.toString()) && (
+                <option value={positionSize}>${positionSize.toLocaleString()}</option>
+              )}
+              <option value="custom">Custom...</option>
+            </select>
+          )}
         </div>
       </div>
 

@@ -7,7 +7,9 @@ import { TrendingUp, Bell, Settings } from 'lucide-react';
 const NAV_LINKS = [
   { href: '/',          label: 'Dashboard' },
   { href: '/markets',   label: 'Markets'   },
-  { href: '/paper-trading', label: 'Paper Trading' },
+  { href: '/trading/paper', label: 'Paper Trading' },
+  { href: '/trading/demo',  label: 'Demo Trading' },
+  { href: '/trading/live',  label: 'Live Trading' },
   { href: '/backtest',  label: 'Backtester' },
   { href: '/positions', label: 'Positions' },
   { href: '/alerts',    label: 'Alerts'    },
@@ -52,9 +54,9 @@ export default function Navbar() {
           <button className="btn btn-ghost" aria-label="Notifications" title="Notifications">
             <Bell size={15} />
           </button>
-          <button className="btn btn-ghost" aria-label="Settings" title="Settings">
+          <Link href="/settings/demo-apis" aria-label="Settings" title="Settings" style={{ display: 'flex', alignItems: 'center', padding: '6px', borderRadius: '6px', color: 'var(--text-secondary)' }}>
             <Settings size={15} />
-          </button>
+          </Link>
           <button className="btn btn-primary">
             Connect Wallet
           </button>

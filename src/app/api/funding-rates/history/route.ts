@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import db from '@/lib/db';
+import { supabase } from '@/lib/supabase';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,12 +51,15 @@ export async function GET(request: Request) {
   const minTimestamp = Date.now() - duration;
 
   try {
-    const rows = db.prepare(`
-      SELECT timestamp, exchange, funding_rate, funding_interval 
-      FROM funding_history 
-      WHERE symbol = ? AND timestamp >= ? 
-      ORDER BY timestamp ASC
-    `).all(normalizedSymbol, minTimestamp) as { timestamp: number, exchange: string, funding_rate: number, funding_interval: number }[];
+    const { data: rows, error } = await supabase
+      .from('funding_history')
+      .select('timestamp, exchange, funding_rate, funding_interval')
+      .eq('symbol', normalizedSymbol)
+      .gte('timestamp', minTimestamp)
+      .order('timestamp', { ascending: true });
+
+    if (error) throw error;
+    if (!rows) return NextResponse.json({ symbol, period, data: [], message: 'Data collection is starting.' });
 
     // Group by timestamp
     const grouped = new Map<number, typeof rows>();
@@ -111,7 +114,7 @@ export async function GET(request: Request) {
       data,
       message: data.length === 0 ? 'Data collection is starting.' : undefined
     });
-  } catch (e) {
+  } catch (e: any) {
     console.error('Error fetching history:', e);
     return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
   }

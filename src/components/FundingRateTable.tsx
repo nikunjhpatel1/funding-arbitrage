@@ -17,9 +17,16 @@ import {
   LayoutList,
   TrendingUp,
   Eye,
+  Calculator,
 } from 'lucide-react';
-import type { FundingRateEntry } from '@/app/api/funding-rates/route';
-import SlippageModal from './SlippageModal';
+import type { FundingRateEntry } from '@/app/api/cron/scanner/route';
+import ProfitSimulatorModal from './ProfitSimulatorModal';
+import { useDebouncedPrices } from '@/hooks/useDebouncedPrices';
+import { usePriceStream } from '@/hooks/usePriceStream';
+import { usePriceStore } from '@/store/prices';
+import { TAKER_FEES } from '@/lib/constants';
+import { calculateSlippage } from '@/lib/slippage';
+
 const AUTO_REFRESH_SEC = 300;
 
 /* ─── Option definitions ─────────────────────────────────────────────────── */
@@ -44,6 +51,13 @@ const MIN_VOLUME_OPTIONS: { label: string; value: number }[] = [
   { label: '≥ $10M',  value: 10_000_000 },
   { label: '≥ $50M',  value: 50_000_000 },
   { label: '≥ $100M', value: 100_000_000},
+];
+
+const POSITION_SIZE_OPTIONS: { label: string; value: number }[] = [
+  { label: '$1k', value: 1000 },
+  { label: '$5k', value: 5000 },
+  { label: '$10k', value: 10000 },
+  { label: '$25k', value: 25000 },
 ];
 
 const INTERVAL_OPTIONS: { label: string; value: IntervalFilter }[] = [
@@ -126,7 +140,7 @@ function fmtNextFunding(isoStr: string) {
 
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 type SortKey =
-  | 'symbol' | 'price' | 'maxSpread' | 'volume24h'
+  | 'symbol' | 'price' | 'maxSpread' | 'expectedNetApr' | 'netFundingAnnualized' | 'totalFeesUsd' | 'totalSlippageUsd' | 'volume24h' | 'liquidityScore' | 'tradeabilityScore'
   | 'binance' | 'bybit' | 'okx' | 'bitget' | 'kucoin' | 'gateio'
   | 'mexc' | 'bingx' | 'htx' | 'bitmex'
   | 'dydx' | 'hyperliquid' | 'phemex' | 'blofin' | 'delta';
@@ -138,6 +152,16 @@ type IntervalFilter = 'all' | '1' | '4' | '8';
 export type EnrichedRow = FundingRateEntry & {
   computedSpread:      number;
   computedOpportunity: 'hot' | 'mild' | 'low';
+  bestLongExchange?:   string;
+  bestShortExchange?:  string;
+  netFundingAnnualized?: number;
+  totalFeesUsd?: number;
+  totalSlippageUsd?: number;
+  expectedDailyReturn?: number;
+  expectedWeeklyReturn?: number;
+  expectedNetApr?: number;
+  liquidityScore?: number;
+  tradeabilityScore?: number;
 };
 
 const EXCHANGE_INTERVALS: Record<string, number> = {
@@ -160,42 +184,23 @@ const EXCHANGE_INTERVALS: Record<string, number> = {
 
 function computeSpread(
   row: FundingRateEntry,
-  keys: string[]
+  keys: string[],
+  livePrices: any[]
 ): number {
   try {
-    const normalizedRates = keys
+    // We compute spread based on real-time prices for active exchanges
+    const pricesForExchanges = keys
       .map((k) => {
-        const rate = row[k as keyof FundingRateEntry];
-        if (typeof rate !== 'number') return null;
-        
-        // Get interval for this exchange
-        // For Binance use the coin's actual interval
-        let interval = EXCHANGE_INTERVALS[k] ?? 8;
-        if (k === 'binance') {
-          interval = row.fundingIntervalHours ?? 8;
-        }
-        
-        // Normalize to 8h equivalent
-        // Prevent divide by zero
-        if (interval <= 0) interval = 8;
-        return rate * (8 / interval);
+        const live = livePrices.find(p => p.symbol === row.symbol.replace('/', '') && p.exchange === k);
+        return live?.markPrice;
       })
-      .filter((r): r is number => 
-        r !== null && 
-        !isNaN(r) && 
-        isFinite(r)
-      );
+      .filter((p): p is number => p != null && p > 0 && !isNaN(p) && isFinite(p));
 
-    if (normalizedRates.length < 2) return 0;
+    if (pricesForExchanges.length < 2) return 0;
     
-    const maxRate = Math.max(...normalizedRates);
-    const minRate = Math.min(...normalizedRates);
-    const spread = maxRate - minRate;
-    
-    // Safety check - spread should never be 
-    // more than 100% (sanity check)
-    if (spread > 1) return 0;
-    if (spread < 0) return 0;
+    const maxPrice = Math.max(...pricesForExchanges);
+    const minPrice = Math.min(...pricesForExchanges);
+    const spread = (maxPrice - minPrice) / minPrice; // ratio (equivalent to % / 100)
     
     return parseFloat(spread.toFixed(8));
   } catch {
@@ -224,6 +229,29 @@ interface Props {
 export default function FundingRateTable({
   data, onRefresh, isRefreshing, updatedAt, exchangeStatus, onEnrichedDataChange, positionSize
 }: Props) {
+  // Initialize SSE connection globally, but we don't subscribe to its state here
+  const { isConnected: isLiveConnected } = usePriceStream();
+  // Read debounced prices for top-level sorting
+  const debouncedPricesMap = useDebouncedPrices(1000);
+  const livePrices = useMemo(() => Object.values(debouncedPricesMap), [debouncedPricesMap]);
+  const liveStatuses = usePriceStore(state => state.statuses);
+  
+  const getMergedStatus = (exKey: string) => {
+    const wsStatusObj = liveStatuses.find(s => s.exchange === exKey);
+    const restStatus = exchangeStatus[exKey];
+    if (wsStatusObj) {
+      return wsStatusObj.status === 'Connected' ? 'ok' : 'error';
+    }
+    return restStatus;
+  };
+
+  const prevDeps = useRef({ data, activeExchangeKeys: null as any, livePrices, positionSize, onEnrichedDataChange });
+
+  useEffect(() => {
+    console.log('[DEBUG] FundingRateTable rendered. data changed?', prevDeps.current.data !== data, 'livePrices changed?', prevDeps.current.livePrices !== livePrices);
+    prevDeps.current = { data, activeExchangeKeys: null, livePrices, positionSize, onEnrichedDataChange };
+  });
+
 
   // Safety check - if data is invalid return empty
   if (!data || !Array.isArray(data)) {
@@ -239,7 +267,7 @@ export default function FundingRateTable({
   }
 
   // ── Filter / sort state ───────────────────────────────────────────────────
-  const [sortKey,    setSortKey]   = useState<SortKey>('maxSpread');
+  const [sortKey,    setSortKey]   = useState<SortKey>('expectedNetApr');
   const [sortDir,    setSortDir]   = useState<SortDir>('desc');
   const [oppFilter,  setOppFilter] = useState<OppFilter>('all');
   const [intervalFilter, setIntervalFilter] = useState<IntervalFilter>('all');
@@ -365,14 +393,113 @@ export default function FundingRateTable({
       return data.map((row) => {
         try {
           const cs = computeSpread(
-            row, activeExchangeKeys
+            row, activeExchangeKeys, livePrices
           );
+          
+          const liveBinance = livePrices.find(p => p.symbol === row.symbol.replace('/', '') && p.exchange === 'binance');
+          const liveBitget = livePrices.find(p => p.symbol === row.symbol.replace('/', '') && p.exchange === 'bitget');
+          const liveDelta = livePrices.find(p => p.symbol === row.symbol.replace('/', '') && p.exchange === 'delta');
+          const newPrice = liveBinance?.markPrice || liveBitget?.markPrice || liveDelta?.markPrice || row.price;
+
+          // --- Phase 2: Net Opportunity Engine ---
+          let bestLong: string | undefined;
+          let bestShort: string | undefined;
+          let minRate = Infinity;
+          let maxRate = -Infinity;
+          
+          for (const ex of activeExchangeKeys) {
+            const rate = row[ex as keyof FundingRateEntry];
+            if (typeof rate === 'number' && !isNaN(rate)) {
+              let interval = EXCHANGE_INTERVALS[ex] ?? 8;
+              if (ex === 'binance') interval = row.fundingIntervalHours ?? 8;
+              if (interval <= 0) interval = 8;
+              
+              const annualized = rate * (8760 / interval);
+              if (annualized < minRate) { minRate = annualized; bestLong = ex; }
+              if (annualized > maxRate) { maxRate = annualized; bestShort = ex; }
+            }
+          }
+
+          let netFundingAnnualized = 0;
+          let totalFeesUsd = 0;
+          let totalSlippageUsd = 0;
+          let expectedDailyReturn = 0;
+          let expectedWeeklyReturn = 0;
+          let expectedNetApr = 0;
+          let liquidityScore = 0;
+          let tradeabilityScore = 0;
+
+          if (bestLong && bestShort && bestLong !== bestShort) {
+            netFundingAnnualized = (maxRate - minRate) * positionSize;
+            
+            // Fees
+            const feeLong = TAKER_FEES[bestLong] ?? 0.0005;
+            const feeShort = TAKER_FEES[bestShort] ?? 0.0005;
+            totalFeesUsd = positionSize * (feeLong + feeShort) * 2; // entry + exit
+            
+            // Slippage & Liquidity (Orderbook-based)
+            const pLong = livePrices.find(p => p.symbol === row.symbol.replace('/', '') && p.exchange === bestLong);
+            const pShort = livePrices.find(p => p.symbol === row.symbol.replace('/', '') && p.exchange === bestShort);
+            
+            if (pLong?.bids && pLong?.asks && pShort?.bids && pShort?.asks) {
+              const slipLong = calculateSlippage(pLong as any, 'buy', positionSize, pLong.markPrice || row.price);
+              const slipShort = calculateSlippage(pShort as any, 'sell', positionSize, pShort.markPrice || row.price);
+              
+              // Exit slippage (inverse side)
+              const exitSlipLong = calculateSlippage(pLong as any, 'sell', positionSize, pLong.markPrice || row.price);
+              const exitSlipShort = calculateSlippage(pShort as any, 'buy', positionSize, pShort.markPrice || row.price);
+              
+              totalSlippageUsd = slipLong.executionCostUSD + slipShort.executionCostUSD + exitSlipLong.executionCostUSD + exitSlipShort.executionCostUSD;
+              
+              const top5LongAsks = pLong.asks.slice(0, 5).reduce((acc, [p, s]) => acc + p*s, 0);
+              const top5LongBids = pLong.bids.slice(0, 5).reduce((acc, [p, s]) => acc + p*s, 0);
+              const top5ShortAsks = pShort.asks.slice(0, 5).reduce((acc, [p, s]) => acc + p*s, 0);
+              const top5ShortBids = pShort.bids.slice(0, 5).reduce((acc, [p, s]) => acc + p*s, 0);
+              
+              const totalAvailable = top5LongAsks + top5LongBids + top5ShortAsks + top5ShortBids;
+              const targetCoverage = positionSize * 4; // entry+exit for both legs
+              liquidityScore = Math.min(100, Math.round((totalAvailable / (targetCoverage || 1)) * 100));
+            } else {
+              // Fallback BBO
+              const calcSlip = (p: any, side: 'buy'|'sell') => {
+                if (p && p.markPrice && p.markPrice > 0) {
+                  if (side === 'buy' && p.ask && p.ask > p.markPrice) return ((p.ask - p.markPrice) / p.markPrice) * positionSize;
+                  if (side === 'sell' && p.bid && p.bid < p.markPrice) return ((p.markPrice - p.bid) / p.markPrice) * positionSize;
+                }
+                return positionSize * 0.0005;
+              };
+              totalSlippageUsd = (calcSlip(pLong, 'buy') + calcSlip(pShort, 'sell')) * 2;
+              liquidityScore = 0;
+            }
+            
+            expectedDailyReturn = (netFundingAnnualized / 365) - totalFeesUsd - totalSlippageUsd;
+            expectedWeeklyReturn = (netFundingAnnualized / 52) - totalFeesUsd - totalSlippageUsd;
+            
+            // APR amortized over 30 days.
+            const fixedCosts = totalFeesUsd + totalSlippageUsd;
+            const annualizedNetProfit = netFundingAnnualized - (fixedCosts * (365 / 30));
+            expectedNetApr = (annualizedNetProfit / positionSize); // as a decimal
+            
+            // Tradeability Score (1-100)
+            const aprScore = Math.min(100, Math.max(0, expectedNetApr * 100));
+            tradeabilityScore = Math.round((liquidityScore * 0.4) + (aprScore * 0.4) + 20); // 20 baseline for active
+          }
+
           return { 
             ...row, 
+            price: newPrice,
             computedSpread: isNaN(cs) ? 0 : cs, 
-            computedOpportunity: computeOpportunity(
-              isNaN(cs) ? 0 : cs
-            ),
+            computedOpportunity: computeOpportunity(isNaN(cs) ? 0 : cs),
+            bestLongExchange: bestLong,
+            bestShortExchange: bestShort,
+            netFundingAnnualized,
+            totalFeesUsd,
+            totalSlippageUsd,
+            expectedDailyReturn,
+            expectedWeeklyReturn,
+            expectedNetApr,
+            liquidityScore,
+            tradeabilityScore
           };
         } catch {
           return { 
@@ -385,11 +512,25 @@ export default function FundingRateTable({
     } catch {
       return [];
     }
-  }, [data, activeExchangeKeys]);
+  }, [data, activeExchangeKeys, livePrices, positionSize]);
+
+  const prevEnrichedRef = useRef<string>('');
 
   useEffect(() => {
-    if (onEnrichedDataChange) onEnrichedDataChange(enrichedData);
+    if (!onEnrichedDataChange || enrichedData.length === 0) return;
+    
+    // Create a simple hash of the enriched data to avoid reference equality loops
+    // and only update parent when the actual data changes.
+    const hash = enrichedData.map(r => `${r.symbol}:${r.computedSpread.toFixed(6)}`).join('|');
+    
+    if (hash !== prevEnrichedRef.current) {
+      prevEnrichedRef.current = hash;
+      onEnrichedDataChange(enrichedData);
+    }
   }, [enrichedData, onEnrichedDataChange]);
+
+
+
 
   // ── Exchange toggle helpers ───────────────────────────────────────────────
   const toggleExchange = useCallback((key: string) => {
@@ -450,6 +591,24 @@ export default function FundingRateTable({
       if (sortKey === 'maxSpread') {
         av = a.computedSpread;
         bv = b.computedSpread;
+      } else if (sortKey === 'expectedNetApr') {
+        av = a.expectedNetApr ?? 0;
+        bv = b.expectedNetApr ?? 0;
+      } else if (sortKey === 'netFundingAnnualized') {
+        av = a.netFundingAnnualized ?? 0;
+        bv = b.netFundingAnnualized ?? 0;
+      } else if (sortKey === 'totalFeesUsd') {
+        av = a.totalFeesUsd ?? 0;
+        bv = b.totalFeesUsd ?? 0;
+      } else if (sortKey === 'totalSlippageUsd') {
+        av = a.totalSlippageUsd ?? 0;
+        bv = b.totalSlippageUsd ?? 0;
+      } else if (sortKey === 'liquidityScore') {
+        av = a.liquidityScore ?? 0;
+        bv = b.liquidityScore ?? 0;
+      } else if (sortKey === 'tradeabilityScore') {
+        av = a.tradeabilityScore ?? 0;
+        bv = b.tradeabilityScore ?? 0;
       } else {
         av = a[sortKey] as number | string | null;
         bv = b[sortKey] as number | string | null;
@@ -464,6 +623,21 @@ export default function FundingRateTable({
     if (pairLimit !== null) rows = rows.slice(0, pairLimit);
     return rows;
   }, [enrichedData, oppFilter, intervalFilter, minSpread, minVolume, search, sortKey, sortDir, pairLimit, activeExchanges]);
+
+  useEffect(() => {
+    const symbolsToStream = visibleRows.map(r => r.symbol.replace('/', ''));
+    if (symbolsToStream.length === 0) return;
+
+    const timer = setTimeout(() => {
+      fetch('/api/prices/update-symbols', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: symbolsToStream }),
+      }).catch(() => {});
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [visibleRows]);
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const rowVirtualizer = useVirtualizer({
@@ -516,8 +690,8 @@ export default function FundingRateTable({
     (oppFilter !== 'all' ? 1 : 0) + (minSpread > 0 ? 1 : 0) +
     (minVolume > 0 ? 1 : 0) + (pairLimit !== null ? 1 : 0) + (search ? 1 : 0) +
     (intervalFilter !== 'all' ? 1 : 0);
-  // Market + Price + exchanges + MaxSpread + Interval + 24hVol + NextFunding + Opp + Trade
-  const totalCols = 2 + activeExchanges.length + 6;
+  // Market + Price + exchanges + MaxSpread + NetAPR + NetFunding + Fees + Slippage + Interval + 24hVol + NextFunding + Opp + Trade
+  const totalCols = 2 + activeExchanges.length + 10;
 
   return (
     <>
@@ -629,12 +803,13 @@ export default function FundingRateTable({
 
       {/* ═════════════════════════════ EXCHANGE SELECTOR ════════════════════════════ */}
       <div className="exchange-selector-bar">
-        <div className="exchange-selector-label">
-          <Eye size={13} style={{ color: 'var(--accent-blue)' }} />
-          Exchanges
-        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', flex: 1 }}>
+          <div className="exchange-selector-label">
+            <Eye size={13} style={{ color: 'var(--accent-blue)' }} />
+            Exchanges
+          </div>
 
-        <div className="exchange-selector-wrap" ref={dropdownRef}>
+          <div className="exchange-selector-wrap" ref={dropdownRef} style={{ maxWidth: '300px' }}>
           <button
             className="exchange-selector-btn"
             onClick={() => setDropdownOpen((v) => !v)}
@@ -675,7 +850,7 @@ export default function FundingRateTable({
               <div className="ex-dd-grid">
                 {ALL_EXCHANGES.filter((e) => e.group === 'top10').map((ex) => {
                   const checked = visibleExchanges.has(ex.key as string);
-                  const status  = exchangeStatus[ex.key as string];
+                  const status  = getMergedStatus(ex.key as string);
                   return (
                     <label key={ex.key as string} className={`ex-dd-item ${checked ? 'checked' : ''}`}>
                       <input
@@ -697,7 +872,7 @@ export default function FundingRateTable({
               <div className="ex-dd-grid">
                 {ALL_EXCHANGES.filter((e) => e.group === 'more').map((ex) => {
                   const checked = visibleExchanges.has(ex.key as string);
-                  const status  = exchangeStatus[ex.key as string];
+                  const status  = getMergedStatus(ex.key as string);
                   return (
                     <label key={ex.key as string} className={`ex-dd-item ${checked ? 'checked' : ''}`}>
                       <input
@@ -715,6 +890,26 @@ export default function FundingRateTable({
               </div>
             </div>
           )}
+        </div>
+
+        {/* ── WS Live Status Indicators ── */}
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginLeft: 'auto' }}>
+          <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 700 }}>
+            Live Stream {isLiveConnected ? '🟢' : '🔴'}
+          </div>
+          {liveStatuses.map(s => (
+            <div key={s.exchange} style={{ 
+              display: 'flex', alignItems: 'center', gap: '4px', 
+              background: 'rgba(255,255,255,0.03)', padding: '3px 8px', 
+              borderRadius: '999px', fontSize: '0.65rem', border: '1px solid var(--border)' 
+            }}>
+              <span style={{ color: 'var(--text-secondary)' }}>{s.exchange}</span>
+              <span className={`ex-status-dot ${s.status === 'Connected' ? 'ok' : 'error'}`} />
+              <span className="mono" style={{ color: 'var(--text-muted)' }}>{s.latencyMs}ms</span>
+              {s.reconnectCount > 0 && <span style={{ color: 'var(--warning)' }}>(R:{s.reconnectCount})</span>}
+            </div>
+          ))}
+        </div>
         </div>
       </div>
 
@@ -847,16 +1042,61 @@ export default function FundingRateTable({
                     Max Spread ⓘ <SortIcon k="maxSpread" />
                   </span>
                 </th>
-                
-                <th className="right" style={{ width: '80px', minWidth: '80px' }}>Trade</th>
 
-                <th className={`right ${sortKey === 'volume24h' ? 'sorted' : ''}`} onClick={() => handleSort('volume24h')} style={{ width: '100px', minWidth: '100px' }}>
+                <th 
+                  className={`right ${sortKey === 'expectedNetApr' ? 'sorted' : ''}`} 
+                  onClick={() => handleSort('expectedNetApr')} 
+                  style={{ width: '100px', minWidth: '100px' }}
+                  title="Estimated Net APR factoring in funding spread, fixed fees, and estimated BBO slippage. Amortized over a 30-day holding period."
+                >
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
-                    24H Volume <SortIcon k="volume24h" />
+                    Net APR <SortIcon k="expectedNetApr" />
                   </span>
                 </th>
 
-                <th className="right" style={{ width: '100px', minWidth: '100px' }}>Opportunity</th>
+                <th 
+                  className={`right ${sortKey === 'netFundingAnnualized' ? 'sorted' : ''}`} 
+                  onClick={() => handleSort('netFundingAnnualized')} 
+                  style={{ width: '100px', minWidth: '100px' }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
+                    Net Funding <SortIcon k="netFundingAnnualized" />
+                  </span>
+                </th>
+
+                <th 
+                  className={`right ${sortKey === 'totalFeesUsd' ? 'sorted' : ''}`} 
+                  onClick={() => handleSort('totalFeesUsd')} 
+                  style={{ width: '90px', minWidth: '90px' }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
+                    Fees <SortIcon k="totalFeesUsd" />
+                  </span>
+                </th>
+
+                <th 
+                  className={`right ${sortKey === 'totalSlippageUsd' ? 'sorted' : ''}`} 
+                  onClick={() => handleSort('totalSlippageUsd')} 
+                  style={{ width: '90px', minWidth: '90px' }}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
+                    Slippage <SortIcon k="totalSlippageUsd" />
+                  </span>
+                </th>
+                
+                <th className="right" style={{ width: '80px', minWidth: '80px' }}>Trade</th>
+
+                <th className={`right ${sortKey === 'liquidityScore' ? 'sorted' : ''}`} onClick={() => handleSort('liquidityScore')} style={{ width: '100px', minWidth: '100px' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
+                    Liquidity <SortIcon k="liquidityScore" />
+                  </span>
+                </th>
+
+                <th className={`right ${sortKey === 'tradeabilityScore' ? 'sorted' : ''}`} onClick={() => handleSort('tradeabilityScore')} style={{ width: '110px', minWidth: '110px' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
+                    Tradeability <SortIcon k="tradeabilityScore" />
+                  </span>
+                </th>
 
                 <th className="right" style={{ width: '120px', minWidth: '120px' }}>
                   <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
@@ -943,6 +1183,7 @@ export default function FundingRateTable({
                         virtualRow={virtualRow}
                         measureElement={rowVirtualizer.measureElement}
                         activeExchanges={activeExchanges}
+                        livePrices={livePrices}
                         onSlippageClick={() => setSelectedSlippageRow(row)}
                       />
                     );
@@ -1019,11 +1260,11 @@ export default function FundingRateTable({
       </div>
 
       {selectedSlippageRow && (
-        <SlippageModal 
+        <ProfitSimulatorModal 
           row={selectedSlippageRow} 
           positionSize={positionSize} 
           onClose={() => setSelectedSlippageRow(null)} 
-          activeExchanges={activeExchanges}
+          activeExchanges={activeExchanges as { key: string; label: string; group?: string }[]}
         />
       )}
 
@@ -1358,25 +1599,33 @@ const MemoizedRow = memo(({
   virtualRow,
   measureElement,
   activeExchanges,
+  livePrices,
   onSlippageClick
 }: {
-  row: FundingRateEntry & { computedSpread: number, computedOpportunity: 'hot'|'mild'|'low' };
+  row: EnrichedRow;
   virtualRow: VirtualItem;
   measureElement: (element: Element | null) => void;
   activeExchanges: typeof ALL_EXCHANGES;
+  livePrices: any[];
   onSlippageClick: () => void;
-}) => {
+  }) => {
+  const cleanSymbol = row.symbol.replace('/', '');
+  const rowPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${row.bestLongExchange}`]?.markPrice 
+    || state.pricesMap[`${cleanSymbol}-${row.bestShortExchange}`]?.markPrice 
+    || Object.values(state.pricesMap).find(p => p.symbol === cleanSymbol)?.markPrice 
+    || row.price);
+    
   const [flashPrice, setFlashPrice] = useState(false);
-  const prevPrice = useRef(row.price);
+  const prevPrice = useRef(rowPrice);
 
   useEffect(() => {
-    if (row.price !== prevPrice.current) {
-      prevPrice.current = row.price;
+    if (rowPrice !== prevPrice.current) {
+      prevPrice.current = rowPrice;
       setFlashPrice(true);
       const t = setTimeout(() => setFlashPrice(false), 800);
       return () => clearTimeout(t);
     }
-  }, [row.price]);
+  }, [rowPrice]);
 
   return (
     <tr 
@@ -1405,7 +1654,7 @@ const MemoizedRow = memo(({
         <div className={`mono ${flashPrice ? 'price-updated' : ''}`} style={{ 
           fontSize: '0.875rem', fontWeight: 600, transition: 'color 0.2s'
         }}>
-          {fmtPrice(row.price)}
+          {fmtPrice(rowPrice)}
         </div>
         <div style={{
           fontSize: '0.72rem', marginTop: 1,
@@ -1483,6 +1732,29 @@ const MemoizedRow = memo(({
         })()}
       </td>
 
+      {/* ── Net Opportunity Engine Columns ── */}
+      <td className="right" title={`Expected Daily: $${row.expectedDailyReturn?.toFixed(2)} | Weekly: $${row.expectedWeeklyReturn?.toFixed(2)}`}>
+        {row.expectedNetApr !== undefined && row.expectedNetApr > 0 ? (
+          <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+            {(row.expectedNetApr * 100).toFixed(2)}%
+          </div>
+        ) : (
+          <div style={{ color: 'var(--text-muted)' }}>—</div>
+        )}
+      </td>
+
+      <td className="right mono" style={{ fontSize: '0.8rem', color: 'var(--positive)' }}>
+        {row.netFundingAnnualized ? `+$${row.netFundingAnnualized.toFixed(2)}` : '—'}
+      </td>
+
+      <td className="right mono" style={{ fontSize: '0.8rem', color: 'var(--negative)' }}>
+        {row.totalFeesUsd ? `-$${row.totalFeesUsd.toFixed(2)}` : '—'}
+      </td>
+
+      <td className="right mono" style={{ fontSize: '0.8rem', color: 'var(--negative)' }}>
+        {row.totalSlippageUsd ? `-$${row.totalSlippageUsd.toFixed(2)}` : '—'}
+      </td>
+
       <td className="right">
         <a
           href={`/trade/${row.baseAsset}-USDT`}
@@ -1500,26 +1772,34 @@ const MemoizedRow = memo(({
         </a>
       </td>
 
-      <td className="right mono" style={{ 
-        fontSize: '0.83rem', 
-        color: 'var(--text-secondary)' 
-      }}>
-        {fmtLarge(row.volume24h)}
-      </td>
-
       <td className="right">
         <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-end' }}>
-          <OppBadge opp={row.computedOpportunity} />
+          <div style={{ fontWeight: 600, color: row.liquidityScore && row.liquidityScore >= 80 ? 'var(--positive)' : row.liquidityScore && row.liquidityScore >= 40 ? 'var(--warning)' : 'var(--negative)' }}>
+            {row.liquidityScore ? `${row.liquidityScore}/100` : '—'}
+          </div>
           <button 
             onClick={onSlippageClick}
             style={{ 
               background: 'rgba(59,130,246,0.1)', border: '1px solid rgba(59,130,246,0.2)', 
-              color: 'var(--accent-blue)', padding: '2px 6px', borderRadius: '4px',
-              fontSize: '0.65rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap'
+              color: 'var(--accent-blue)', padding: '3px 8px', borderRadius: '4px',
+              fontSize: '0.65rem', fontWeight: 600, cursor: 'pointer', whiteSpace: 'nowrap',
+              display: 'flex', alignItems: 'center', gap: '4px'
             }}
           >
-            Est. Slippage
+            <Calculator size={10} /> Simulate
           </button>
+        </div>
+      </td>
+
+      <td className="right">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', alignItems: 'flex-end' }}>
+          <div style={{ 
+            fontWeight: 800, fontSize: '0.85rem',
+            color: row.tradeabilityScore && row.tradeabilityScore >= 80 ? 'var(--positive)' : row.tradeabilityScore && row.tradeabilityScore >= 50 ? 'var(--warning)' : 'var(--negative)' 
+          }}>
+            {row.tradeabilityScore ? row.tradeabilityScore : '—'}
+          </div>
+          <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Score</span>
         </div>
       </td>
 
@@ -1533,7 +1813,12 @@ const MemoizedRow = memo(({
       </td>
 
       {activeExchanges.map((ex) => {
-        const rate = row[ex.key as keyof FundingRateEntry] as number | null;
+        let rate = row[ex.key as keyof FundingRateEntry] as number | null;
+        const live = livePrices.find(p => p.symbol === row.symbol.replace('/', '') && p.exchange === ex.key);
+        if (live?.fundingRate !== undefined) {
+          rate = live.fundingRate;
+        }
+
         const intervalHours = row.exchangeIntervals?.[ex.key as string] ?? 8;
         let tooltipText: string | undefined;
         if (rate !== null) {

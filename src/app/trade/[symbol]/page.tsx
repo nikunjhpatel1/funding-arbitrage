@@ -7,12 +7,15 @@ import dynamic from 'next/dynamic';
 
 const HistoricalCharts = dynamic(() => import('@/components/HistoricalCharts'), { ssr: false });
 const OpportunityAnalysis = dynamic(() => import('@/components/OpportunityAnalysis'), { ssr: false });
+import TradeExecutionModal from '@/components/TradeExecutionModal';
 import { 
   ArrowLeft, TrendingUp, TrendingDown, 
   ExternalLink, AlertTriangle, Zap,
   BarChart2
 } from 'lucide-react';
-import type { FundingRateEntry } from '@/app/api/funding-rates/route';
+import type { FundingRateEntry } from '@/app/api/cron/scanner/route';
+import { usePriceStream } from '@/hooks/usePriceStream';
+import { usePriceStore } from '@/store/prices';
 
 const EXCHANGE_URLS: Record<string, (sym: string) => string> = {
   binance:     (s) => `https://www.binance.com/en/futures/${s}USDT`,
@@ -72,6 +75,13 @@ export default function TradePage() {
   const [leverage, setLeverage] = useState<number>(5);
   const [longExchange, setLongExchange] = useState<string>('');
   const [shortExchange, setShortExchange] = useState<string>('');
+  const [showExecuteModal, setShowExecuteModal] = useState(false);
+
+  usePriceStream(); // Ensure the SSE connection is active on this page too
+
+  const cleanSymbol = baseAsset + 'USDT';
+  const liveLongPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${longExchange}`]?.markPrice);
+  const liveShortPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${shortExchange}`]?.markPrice);
 
   useEffect(() => {
     async function load() {
@@ -294,7 +304,7 @@ export default function TradePage() {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Current Price</span>
               <span style={{ fontWeight: 600, fontFamily: 'monospace', fontSize: '1rem' }}>
-                {fmtPrice(coinData.exchangePrices?.[longExchange] ?? coinData.price)}
+                {fmtPrice(liveLongPrice ?? coinData.exchangePrices?.[longExchange] ?? coinData.price)}
               </span>
             </div>
           </div>
@@ -358,7 +368,7 @@ export default function TradePage() {
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>Current Price</span>
               <span style={{ fontWeight: 600, fontFamily: 'monospace', fontSize: '1rem' }}>
-                {fmtPrice(coinData.exchangePrices?.[shortExchange] ?? coinData.price)}
+                {fmtPrice(liveShortPrice ?? coinData.exchangePrices?.[shortExchange] ?? coinData.price)}
               </span>
             </div>
           </div>
@@ -543,6 +553,20 @@ export default function TradePage() {
             Open Both Exchanges
           </button>
           
+          <button
+            onClick={() => setShowExecuteModal(true)}
+            style={{
+              padding: '16px 32px', fontSize: '1.1rem', fontWeight: 700,
+              background: 'linear-gradient(135deg, #f59e0b, #ef4444)',
+              border: 'none', cursor: 'pointer', borderRadius: 8,
+              color: '#000', display: 'inline-flex', alignItems: 'center', gap: 8,
+              boxShadow: '0 0 30px rgba(245,158,11,0.4)',
+            }}
+          >
+            <Zap size={20} />
+            Execute Real Trade
+          </button>
+
           <Link href={`/paper-trading?symbol=${encodeURIComponent(coinData.symbol)}&long=${longExchange}&short=${shortExchange}`} passHref>
             <button
               className="btn btn-ghost"
@@ -555,12 +579,37 @@ export default function TradePage() {
               Paper Trade
             </button>
           </Link>
+
+          <Link href={`/demo-trading?symbol=${encodeURIComponent(coinData.symbol)}&long=${longExchange}&short=${shortExchange}`} passHref>
+            <button
+              style={{
+                padding: '16px 32px', fontSize: '1.1rem', fontWeight: 700,
+                background: 'rgba(34,197,94,0.15)', border: '1px solid rgba(34,197,94,0.4)',
+                cursor: 'pointer', borderRadius: 8, color: '#22c55e',
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+              }}
+            >
+              <Zap size={20} />
+              Execute Demo Trade
+            </button>
+          </Link>
         </div>
         <div style={{ marginTop: 20, fontSize: '0.8rem', color: 'var(--text-muted)' }}>
           ⚠️ Always verify prices and funding rates on the exchange before executing. Not financial advice.
         </div>
       </div>
 
+      <TradeExecutionModal
+        isOpen={showExecuteModal}
+        onClose={() => setShowExecuteModal(false)}
+        symbol={coinData.symbol}
+        longExchange={longExchange}
+        shortExchange={shortExchange}
+        longPrice={coinData.exchangePrices?.[longExchange] ?? coinData.price}
+        shortPrice={coinData.exchangePrices?.[shortExchange] ?? coinData.price}
+        spread={spread * 100}
+        apr={aprYearly}
+      />
     </div>
   );
 }

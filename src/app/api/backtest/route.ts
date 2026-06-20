@@ -1,23 +1,7 @@
 import { NextResponse } from 'next/server';
-import db from '@/lib/db';
+import { supabase } from '@/lib/supabase';
 
-const TAKER_FEES: Record<string, number> = {
-  binance:     0.0004,
-  bybit:       0.0006,
-  okx:         0.0005,
-  bitget:      0.0006,
-  kucoin:      0.0006,
-  gateio:      0.0005,
-  mexc:        0.0000,
-  bingx:       0.0005,
-  htx:         0.0005,
-  bitmex:      0.00075,
-  dydx:        0.0005,
-  hyperliquid: 0.00035,
-  phemex:      0.0006,
-  blofin:      0.0005,
-  delta:       0.0005,
-};
+import { TAKER_FEES } from '@/lib/constants';
 
 export const maxDuration = 60;
 export const dynamic = 'force-dynamic';
@@ -73,21 +57,34 @@ export async function POST(req: Request) {
     console.log(`[Backtest] symbol="${symbol}" → normalized="${dbSymbol}", range=${startTs}–${endTs}`);
 
     // 1. Fetch historical data
-    const rows = db.prepare(`
-      SELECT * FROM funding_rate_history 
-      WHERE symbol = ? AND recorded_at >= ? AND recorded_at <= ? 
-      ORDER BY recorded_at ASC
-    `).all(dbSymbol, startTs, endTs) as any[];
+    const { data: rows, error: fetchError } = await supabase
+      .from('funding_rate_history')
+      .select('*')
+      .eq('symbol', dbSymbol)
+      .gte('recorded_at', startTs)
+      .lte('recorded_at', endTs)
+      .order('recorded_at', { ascending: true });
 
-    if (rows.length === 0) {
-      const available = db
-        .prepare(`SELECT DISTINCT symbol FROM funding_rate_history WHERE recorded_at >= ? AND recorded_at <= ? LIMIT 10`)
-        .all(startTs, endTs) as { symbol: string }[];
-      const sample = available.map(r => r.symbol).join(', ');
+    if (fetchError) {
+      console.error('[Supabase] Backtest fetch error', fetchError);
+      return NextResponse.json({ error: 'Database fetch error' }, { status: 500 });
+    }
+
+    if (!rows || rows.length === 0) {
+      // Fetch available symbols for helpful error message
+      const { data: available } = await supabase
+        .from('funding_rate_history')
+        .select('symbol')
+        .gte('recorded_at', startTs)
+        .lte('recorded_at', endTs)
+        .limit(50);
+        
+      const uniqueSymbols = available ? Array.from(new Set(available.map(r => r.symbol))).slice(0, 10).join(', ') : '';
+      
       return NextResponse.json(
         {
           error: `No historical data found for "${dbSymbol}" between ${startDate} and ${endDate}.\n` +
-                 `Available symbols in this date range (sample): ${sample || 'none — the date range may be outside the recorded history.'}`,
+                 `Available symbols in this date range (sample): ${uniqueSymbols || 'none — the date range may be outside the recorded history.'}`,
         },
         { status: 400 },
       );

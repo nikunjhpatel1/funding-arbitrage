@@ -108,6 +108,18 @@ export function calculateSlippage(
     }
   }
 
+  // If the book is completely consumed but there is remaining notional,
+  // we apply a harsh synthetic penalty to the remainder to accurately reflect the lack of liquidity.
+  if (remainingNotional > 0.0001 && levels.length > 0) {
+    const worstPrice = levels[levels.length - 1][0];
+    // Add a 1% penalty to the worst price for the remaining notional
+    const penalizedPrice = side === 'buy' ? worstPrice * 1.01 : worstPrice * 0.99;
+    const baseNeeded = remainingNotional / Math.max(0.000001, penalizedPrice);
+    totalCostBase += baseNeeded;
+    totalCostQuote += remainingNotional;
+    remainingNotional = 0;
+  }
+
   const fullyFilled = remainingNotional <= 0.0001;
   const filledNotional = targetNotionalUSD - remainingNotional;
   

@@ -6,23 +6,7 @@ import SymbolSearch from '@/components/SymbolSearch';
 import { Play, TrendingUp, Activity, Crosshair, DollarSign, Percent, AlertTriangle, ArrowRightLeft, Download, ExternalLink } from 'lucide-react';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, ComposedChart, Bar, Cell } from 'recharts';
 
-const TAKER_FEES: Record<string, number> = {
-  binance:     0.0004,
-  bybit:       0.0006,
-  okx:         0.0005,
-  bitget:      0.0006,
-  kucoin:      0.0006,
-  gateio:      0.0005,
-  mexc:        0.0000,
-  bingx:       0.0005,
-  htx:         0.0005,
-  bitmex:      0.00075,
-  dydx:        0.0005,
-  hyperliquid: 0.00035,
-  phemex:      0.0006,
-  blofin:      0.0005,
-  delta:       0.0005,
-};
+import { TAKER_FEES } from '@/lib/constants';
 
 export default function BacktestPage() {
   const [symbol, setSymbol] = useState('BTC/USDT');
@@ -325,7 +309,7 @@ export default function BacktestPage() {
                       <YAxis yAxisId="right" orientation="right" stroke="var(--text-muted)" fontSize={12} tickFormatter={(v) => v.toFixed(2)} domain={['auto', 'auto']} hide />
                       <Tooltip
                         contentStyle={{ background: 'var(--bg-deep)', border: '1px solid var(--border)', borderRadius: 8, color: '#fff' }}
-                        formatter={(value: any, name: string) => [`${Number(value).toFixed(4)}${rateMode === 'apy' ? '%' : ''}`, name]}
+                        formatter={(value: any, name: any) => [`${Number(value).toFixed(4)}${rateMode === 'apy' ? '%' : ''}`, name]}
                         labelStyle={{ color: 'var(--text-muted)', marginBottom: 5 }}
                       />
                       <ReferenceLine y={0} yAxisId="left" stroke="var(--border)" strokeDasharray="3 3" />
@@ -356,7 +340,7 @@ export default function BacktestPage() {
                       <YAxis stroke="var(--text-muted)" fontSize={12} tickFormatter={(v) => `$${v.toLocaleString()}`} domain={['auto', 'auto']} />
                       <Tooltip
                         contentStyle={{ background: 'var(--bg-deep)', border: '1px solid var(--border)', borderRadius: 8, color: '#fff' }}
-                        formatter={(value: any, name: string) => [`$${Number(value).toFixed(2)}`, name]}
+                        formatter={(value: any, name: any) => [`$${Number(value).toFixed(2)}`, name]}
                         labelStyle={{ color: 'var(--text-muted)', marginBottom: 5 }}
                       />
                       <ReferenceLine y={0} stroke="var(--border)" />
