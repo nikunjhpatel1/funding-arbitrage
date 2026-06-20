@@ -3,6 +3,8 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Zap, AlertTriangle, CheckCircle, XCircle, Loader2, ArrowLeft } from 'lucide-react';
+import { usePriceStream } from '@/hooks/usePriceStream';
+import { usePriceStore } from '@/store/prices';
 
 function DemoTradingContent() {
   const searchParams = useSearchParams();
@@ -22,6 +24,12 @@ function DemoTradingContent() {
   const [executing, setExecuting] = useState(false);
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+
+  usePriceStream(); // Ensure SSE connection is active
+
+  const cleanSymbol = symbol.replace('/', '');
+  const liveLongPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${longExchange}`]?.markPrice);
+  const liveShortPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${shortExchange}`]?.markPrice);
 
   useEffect(() => {
     async function loadData() {
@@ -78,8 +86,8 @@ function DemoTradingContent() {
           shortExchange,
           capital: capitalNum,
           leverage: leverageNum,
-          longPrice,
-          shortPrice,
+          longPrice: liveLongPrice ?? longPrice,
+          shortPrice: liveShortPrice ?? shortPrice,
         }),
       });
       const data = await res.json();
@@ -157,9 +165,9 @@ function DemoTradingContent() {
             <div style={{ color: '#3b82f6', fontWeight: 600, textTransform: 'capitalize' }}>{shortExchange} Testnet</div>
             
             <div style={{ color: 'var(--text-secondary)' }}>Long Price (Live)</div>
-            <div style={{ color: 'var(--text-primary)' }}>${longPrice.toLocaleString()}</div>
+            <div style={{ color: 'var(--text-primary)' }}>${(liveLongPrice ?? longPrice).toLocaleString()}</div>
             <div style={{ color: 'var(--text-secondary)' }}>Short Price (Live)</div>
-            <div style={{ color: 'var(--text-primary)' }}>${shortPrice.toLocaleString()}</div>
+            <div style={{ color: 'var(--text-primary)' }}>${(liveShortPrice ?? shortPrice).toLocaleString()}</div>
             
             <div style={{ color: 'var(--text-secondary)' }}>Live Spread</div>
             <div style={{ color: '#22c55e', fontWeight: 600 }}>{spread.toFixed(4)}%</div>
