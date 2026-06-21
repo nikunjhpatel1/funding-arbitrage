@@ -16,8 +16,7 @@ function DemoTradingContent() {
 
   const [longPrice, setLongPrice] = useState(0);
   const [shortPrice, setShortPrice] = useState(0);
-  const [spread, setSpread] = useState(0);
-  const [apr, setApr] = useState(0);
+  const [coinDataRaw, setCoinDataRaw] = useState<any>(null);
   
   const [capital, setCapital] = useState('1000');
   const [leverage, setLeverage] = useState('1');
@@ -31,32 +30,36 @@ function DemoTradingContent() {
   const liveLongPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${longExchange}`]?.markPrice);
   const liveShortPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${shortExchange}`]?.markPrice);
 
+  const liveLongFundingRate = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${longExchange}`]?.fundingRate);
+  const liveShortFundingRate = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${shortExchange}`]?.fundingRate);
+
+  const effectiveLongRate = liveLongFundingRate ?? (longExchange && coinDataRaw ? coinDataRaw[longExchange] : null) ?? 0;
+  const effectiveShortRate = liveShortFundingRate ?? (shortExchange && coinDataRaw ? coinDataRaw[shortExchange] : null) ?? 0;
+  const lInterval = coinDataRaw?.exchangeIntervals?.[longExchange] ?? 8;
+  const sInterval = coinDataRaw?.exchangeIntervals?.[shortExchange] ?? 8;
+  const normLRate = effectiveLongRate * (8 / lInterval);
+  const normSRate = effectiveShortRate * (8 / sInterval);
+  const spread = (normSRate - normLRate) * 100;
+  const dailyProfit = (effectiveShortRate * (24 / sInterval)) - (effectiveLongRate * (24 / lInterval));
+  const apr = dailyProfit * 365 * 100;
+
   useEffect(() => {
     async function loadData() {
-      if (!symbol) return;
+      if (!symbol) {
+        setLoading(false);
+        return;
+      }
       try {
         const baseAsset = symbol.split('/')[0];
         const res = await fetch('/api/funding-rates', { cache: 'no-store' });
         const json = await res.json();
         const found = json.data?.find((d: any) => d.baseAsset === baseAsset);
         if (found) {
+          setCoinDataRaw(found);
           const lPrice = found.exchangePrices?.[longExchange] ?? found.price ?? 0;
           const sPrice = found.exchangePrices?.[shortExchange] ?? found.price ?? 0;
           setLongPrice(lPrice);
           setShortPrice(sPrice);
-          
-          const lRate = found[longExchange] ?? 0;
-          const sRate = found[shortExchange] ?? 0;
-          const lInterval = found.exchangeIntervals?.[longExchange] ?? 8;
-          const sInterval = found.exchangeIntervals?.[shortExchange] ?? 8;
-          
-          const normLRate = lRate * (8 / lInterval);
-          const normSRate = sRate * (8 / sInterval);
-          
-          setSpread((normSRate - normLRate) * 100);
-          
-          const dailyProfit = (sRate * (24 / sInterval)) - (lRate * (24 / lInterval));
-          setApr(dailyProfit * 365 * 100);
         }
       } catch (e) {
         console.error('Failed to load data:', e);

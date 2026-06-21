@@ -20,6 +20,7 @@ import {
   Calculator,
 } from 'lucide-react';
 import type { FundingRateEntry } from '@/app/api/cron/scanner/route';
+import { ALL_EXCHANGES_CONFIG } from '@/lib/exchanges';
 import ProfitSimulatorModal from './ProfitSimulatorModal';
 import { useDebouncedPrices } from '@/hooks/useDebouncedPrices';
 import { usePriceStream } from '@/hooks/usePriceStream';
@@ -68,28 +69,11 @@ const INTERVAL_OPTIONS: { label: string; value: IntervalFilter }[] = [
 ];
 
 /* ─── Exchange registry ──────────────────────────────────────────────────── */
-// Ordered by global popularity / trading volume
-const ALL_EXCHANGES: { key: keyof FundingRateEntry; label: string; group: 'top10' | 'more' }[] = [
-  { key: 'binance',     label: 'Binance',     group: 'top10' },
-  { key: 'bybit',       label: 'Bybit',       group: 'top10' },
-  { key: 'okx',         label: 'OKX',         group: 'top10' },
-  { key: 'bitget',      label: 'Bitget',      group: 'top10' },
-  { key: 'kucoin',      label: 'KuCoin',      group: 'top10' },
-  { key: 'gateio',      label: 'Gate.io',     group: 'top10' },
-  { key: 'mexc',        label: 'MEXC',        group: 'top10' },
-  { key: 'bingx',       label: 'BingX',       group: 'top10' },
-  { key: 'htx',         label: 'HTX',         group: 'top10' },
-  { key: 'bitmex',      label: 'BitMEX',      group: 'top10' },
-  { key: 'dydx',        label: 'dYdX',        group: 'more'  },
-  { key: 'hyperliquid', label: 'Hyperliquid', group: 'more'  },
-  { key: 'phemex',      label: 'Phemex',      group: 'more'  },
-  { key: 'blofin',      label: 'BloFin',      group: 'more'  },
-  { key: 'delta',       label: 'Delta',       group: 'more'  },
-];
+const ALL_EXCHANGES = ALL_EXCHANGES_CONFIG;
 
 // Default: top 10 most popular by trading volume
 const DEFAULT_VISIBLE = new Set<string>(
-  ALL_EXCHANGES.filter((e) => e.group === 'top10').map((e) => e.key as string),
+  ALL_EXCHANGES.filter((e) => e.group === 'top10').map((e) => e.id),
 );
 
 /* ─── Helpers ────────────────────────────────────────────────────────────── */
@@ -141,9 +125,7 @@ function fmtNextFunding(isoStr: string) {
 /* ─── Types ──────────────────────────────────────────────────────────────── */
 type SortKey =
   | 'symbol' | 'price' | 'maxSpread' | 'expectedNetApr' | 'netFundingAnnualized' | 'totalFeesUsd' | 'totalSlippageUsd' | 'volume24h' | 'liquidityScore' | 'tradeabilityScore'
-  | 'binance' | 'bybit' | 'okx' | 'bitget' | 'kucoin' | 'gateio'
-  | 'mexc' | 'bingx' | 'htx' | 'bitmex'
-  | 'dydx' | 'hyperliquid' | 'phemex' | 'blofin' | 'delta';
+  | string;
 
 type SortDir   = 'asc' | 'desc';
 type OppFilter = 'all' | 'hot' | 'mild' | 'low';
@@ -374,13 +356,13 @@ export default function FundingRateTable({
 
   // ── Derived active exchange list ──────────────────────────────────────────
   const activeExchanges = useMemo(
-    () => ALL_EXCHANGES.filter((ex) => visibleExchanges.has(ex.key as string)),
+    () => ALL_EXCHANGES.filter((ex) => visibleExchanges.has(ex.id as string)),
     [visibleExchanges],
   );
 
   /** Plain string keys of currently visible exchanges, for spread computation */
   const activeExchangeKeys = useMemo(
-    () => activeExchanges.map((ex) => ex.key as string),
+    () => activeExchanges.map((ex) => ex.id as string),
     [activeExchanges],
   );
 
@@ -546,7 +528,7 @@ export default function FundingRateTable({
   }, []);
 
   const selectAll   = useCallback(() =>
-    setVisibleExchanges(new Set(ALL_EXCHANGES.map((e) => e.key as string))), []);
+    setVisibleExchanges(new Set(ALL_EXCHANGES.map((e) => e.id as string))), []);
   const resetDefault = useCallback(() =>
     setVisibleExchanges(new Set(DEFAULT_VISIBLE)), []);
 
@@ -566,7 +548,7 @@ export default function FundingRateTable({
       const intervalNum = parseInt(intervalFilter, 10);
       rows = rows.filter((r) => 
         activeExchanges.some(ex => 
-          (r.exchangeIntervals?.[ex.key as string] ?? 8) === intervalNum && r[ex.key as keyof FundingRateEntry] !== null
+          (r.exchangeIntervals?.[ex.id as string] ?? 8) === intervalNum && r[ex.id as keyof FundingRateEntry] !== null
         )
       );
     }
@@ -610,8 +592,8 @@ export default function FundingRateTable({
         av = a.tradeabilityScore ?? 0;
         bv = b.tradeabilityScore ?? 0;
       } else {
-        av = a[sortKey] as number | string | null;
-        bv = b[sortKey] as number | string | null;
+        av = (a as any)[sortKey] as number | string | null;
+        bv = (b as any)[sortKey] as number | string | null;
       }
       if (av === null) return 1;
       if (bv === null) return -1;
@@ -662,7 +644,7 @@ export default function FundingRateTable({
       const intervalNum = parseInt(intervalFilter, 10);
       rows = rows.filter((r) =>
         activeExchanges.some(ex =>
-          (r.exchangeIntervals?.[ex.key as string] ?? 8) === intervalNum && r[ex.key as keyof FundingRateEntry] !== null
+          (r.exchangeIntervals?.[ex.id as string] ?? 8) === intervalNum && r[ex.id as keyof FundingRateEntry] !== null
         )
       );
     }
@@ -820,7 +802,7 @@ export default function FundingRateTable({
             <span className="ex-count-badge">{visibleExchanges.size} / {ALL_EXCHANGES.length}</span>
             <span className="ex-pills-preview">
               {activeExchanges.slice(0, 5).map((ex) => (
-                <span key={ex.key as string} className="ex-preview-pill">{ex.label}</span>
+                <span key={ex.id as string} className="ex-preview-pill">{ex.name}</span>
               ))}
               {activeExchanges.length > 5 && (
                 <span className="ex-preview-pill ex-preview-more">+{activeExchanges.length - 5}</span>
@@ -849,18 +831,18 @@ export default function FundingRateTable({
               <div className="ex-dd-group-label">Top 10 by Volume</div>
               <div className="ex-dd-grid">
                 {ALL_EXCHANGES.filter((e) => e.group === 'top10').map((ex) => {
-                  const checked = visibleExchanges.has(ex.key as string);
-                  const status  = getMergedStatus(ex.key as string);
+                  const checked = visibleExchanges.has(ex.id as string);
+                  const status  = getMergedStatus(ex.id as string);
                   return (
-                    <label key={ex.key as string} className={`ex-dd-item ${checked ? 'checked' : ''}`}>
+                    <label key={ex.id as string} className={`ex-dd-item ${checked ? 'checked' : ''}`}>
                       <input
                         type="checkbox"
-                        id={`ex-check-${ex.key as string}`}
+                        id={`ex-check-${ex.id as string}`}
                         checked={checked}
-                        onChange={() => toggleExchange(ex.key as string)}
+                        onChange={() => toggleExchange(ex.id as string)}
                         className="ex-dd-checkbox"
                       />
-                      <span className="ex-dd-name">{ex.label}</span>
+                      <span className="ex-dd-name">{ex.name}</span>
                       <span className={`ex-status-dot ${status === 'ok' ? 'ok' : status === 'error' ? 'error' : ''}`} />
                     </label>
                   );
@@ -871,18 +853,18 @@ export default function FundingRateTable({
               <div className="ex-dd-group-label" style={{ marginTop: 4 }}>Derivatives / Other</div>
               <div className="ex-dd-grid">
                 {ALL_EXCHANGES.filter((e) => e.group === 'more').map((ex) => {
-                  const checked = visibleExchanges.has(ex.key as string);
-                  const status  = getMergedStatus(ex.key as string);
+                  const checked = visibleExchanges.has(ex.id as string);
+                  const status  = getMergedStatus(ex.id as string);
                   return (
-                    <label key={ex.key as string} className={`ex-dd-item ${checked ? 'checked' : ''}`}>
+                    <label key={ex.id as string} className={`ex-dd-item ${checked ? 'checked' : ''}`}>
                       <input
                         type="checkbox"
-                        id={`ex-check-${ex.key as string}`}
+                        id={`ex-check-${ex.id as string}`}
                         checked={checked}
-                        onChange={() => toggleExchange(ex.key as string)}
+                        onChange={() => toggleExchange(ex.id as string)}
                         className="ex-dd-checkbox"
                       />
-                      <span className="ex-dd-name">{ex.label}</span>
+                      <span className="ex-dd-name">{ex.name}</span>
                       <span className={`ex-status-dot ${status === 'ok' ? 'ok' : status === 'error' ? 'error' : ''}`} />
                     </label>
                   );
@@ -1105,18 +1087,18 @@ export default function FundingRateTable({
                 </th>
 
                 {activeExchanges.map((ex) => {
-                  const isDown = exchangeStatus[ex.key as string] === 'error';
+                  const isDown = exchangeStatus[ex.id as string] === 'error';
                   return (
                     <th
-                      key={ex.key as string}
-                      className={`right ${sortKey === ex.key ? 'sorted' : ''} ${isDown ? 'exchange-down' : ''}`}
-                      onClick={() => handleSort(ex.key as SortKey)}
-                      title={isDown ? `${ex.label} data unavailable` : undefined}
+                      key={ex.id as string}
+                      className={`right ${sortKey === ex.id ? 'sorted' : ''} ${isDown ? 'exchange-down' : ''}`}
+                      onClick={() => handleSort(ex.id as SortKey)}
+                      title={isDown ? `${ex.name} data unavailable` : undefined}
                     >
                       <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 4 }}>
                         {isDown && <AlertTriangle size={10} style={{ color: 'var(--warning)', flexShrink: 0 }} />}
-                        {ex.label}
-                        <SortIcon k={ex.key as SortKey} />
+                        {ex.name}
+                        <SortIcon k={ex.id as SortKey} />
                       </span>
                     </th>
                   );
@@ -1264,7 +1246,7 @@ export default function FundingRateTable({
           row={selectedSlippageRow} 
           positionSize={positionSize} 
           onClose={() => setSelectedSlippageRow(null)} 
-          activeExchanges={activeExchanges as { key: string; label: string; group?: string }[]}
+          activeExchanges={activeExchanges.map(ex => ({ key: ex.id, label: ex.name, group: ex.group }))}
         />
       )}
 
@@ -1692,12 +1674,12 @@ const MemoizedRow = memo(({
         {(() => {
           const normalizedRates = activeExchanges
             .map(ex => {
-              const rate = row[ex.key as keyof FundingRateEntry] as number | null;
+              const rate = row[ex.id as keyof FundingRateEntry] as number | null;
               if (rate === null) return null;
-              const interval = row.exchangeIntervals?.[ex.key as string] ?? 8;
+              const interval = row.exchangeIntervals?.[ex.id as string] ?? 8;
               return {
-                key: ex.key as string,
-                label: ex.label,
+                key: ex.id as string,
+                label: ex.name,
                 rate,
                 normalized: rate * (8 / interval),
                 interval,
@@ -1813,13 +1795,13 @@ const MemoizedRow = memo(({
       </td>
 
       {activeExchanges.map((ex) => {
-        let rate = row[ex.key as keyof FundingRateEntry] as number | null;
-        const live = livePrices.find(p => p.symbol === row.symbol.replace('/', '') && p.exchange === ex.key);
+        let rate = row[ex.id as keyof FundingRateEntry] as number | null;
+        const live = livePrices.find(p => p.symbol === row.symbol.replace('/', '') && p.exchange === ex.id);
         if (live?.fundingRate !== undefined) {
           rate = live.fundingRate;
         }
 
-        const intervalHours = row.exchangeIntervals?.[ex.key as string] ?? 8;
+        const intervalHours = row.exchangeIntervals?.[ex.id as string] ?? 8;
         let tooltipText: string | undefined;
         if (rate !== null) {
           const normalizedRate = rate * (8 / intervalHours);
@@ -1829,7 +1811,7 @@ const MemoizedRow = memo(({
         }
         return (
           <td
-            key={ex.key as string}
+            key={ex.id as string}
             className="right rate-cell"
             title={tooltipText}
           >

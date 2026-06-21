@@ -1,6 +1,7 @@
 import { EventEmitter } from 'events';
+import { io as ioV4, Socket as SocketV4 } from 'socket.io-client-v4';
 
-export type ExchangeName = 'binance' | 'bitget' | 'delta' | string;
+export type ExchangeName = 'binance' | 'bitget' | 'delta' | 'coinswitch' | string;
 
 export interface UnifiedPrice {
   symbol: string;      // e.g. BTCUSDT
@@ -57,7 +58,7 @@ abstract class ExchangeAdapter {
   }
 
   protected updatePrice(symbol: string, updates: Partial<UnifiedPrice>, timestamp: number) {
-    if (this.name === 'binance' && updates.fundingRate !== undefined) console.log('[BINANCE_UPDATE]', symbol, updates);
+
     this.manager.updatePrice(this.name, symbol, updates, timestamp);
   }
 
@@ -65,10 +66,16 @@ abstract class ExchangeAdapter {
     this.manager.updateStatus(this.name, { status, reconnectCount });
   }
 
+  private reconnectTimer: NodeJS.Timeout | null = null;
+
   protected triggerReconnect() {
     console.log(`[WS] ${this.name} disconnected, reconnecting...`);
     this.disconnect();
-    this.manager.reconnect(this.name, () => this.connect());
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = this.manager.reconnect(this.name, () => {
+      this.reconnectTimer = null;
+      this.connect();
+    });
   }
 }
 
@@ -181,7 +188,7 @@ class BitgetAdapter extends ExchangeAdapter {
                 if (item.askPr) updates.ask = parseFloat(item.askPr);
                 if (item.fundingRate) {
                   updates.fundingRate = parseFloat(item.fundingRate);
-                  console.log({ exchange: 'bitget', fundingRate: updates.fundingRate, source: 'websocket', timestamp: Date.now() });
+
                 }
                 if (item.nextFundingTime) updates.nextFunding = new Date(parseInt(item.nextFundingTime)).toISOString();
               }
@@ -240,7 +247,7 @@ class DeltaAdapter extends ExchangeAdapter {
             if (data.best_ask) updates.ask = parseFloat(data.best_ask);
             if (data.funding_rate) {
               updates.fundingRate = parseFloat(data.funding_rate);
-              console.log({ exchange: 'delta', fundingRate: updates.fundingRate, source: 'websocket', timestamp: Date.now() });
+
             }
             if (data.next_funding_at) updates.nextFunding = data.next_funding_at;
           } else if (data.type === 'l2_orderbook') {
@@ -378,7 +385,7 @@ class BybitAdapter extends ExchangeAdapter {
               // fundingRate is present in the initial snapshot (type='snapshot') and occasionally in delta updates
               if (data.data.fundingRate !== undefined && data.data.fundingRate !== '') {
                 updates.fundingRate = parseFloat(data.data.fundingRate);
-                console.log({ exchange: 'bybit', fundingRate: updates.fundingRate, source: 'websocket', timestamp: Date.now() });
+
               }
               if (data.data.nextFundingTime) updates.nextFunding = new Date(parseInt(data.data.nextFundingTime)).toISOString();
             } else if (data.topic.startsWith('orderbook.')) {
@@ -490,10 +497,10 @@ class KucoinAdapter extends ExchangeAdapter {
               updates.markPrice = parseFloat(data.data.markPrice);
             }
           } else if (data.subject === 'funding.rate') {
-            console.log(`\n[KUCOIN RAW funding.rate] ${JSON.stringify(data)}`);
+
             if (data.data.fundingRate !== undefined) {
               updates.fundingRate = parseFloat(data.data.fundingRate);
-              console.log(`[KUCOIN PARSED] symbol: ${symbol}, updates: ${JSON.stringify(updates)}`);
+
             }
           }
 
@@ -936,10 +943,10 @@ class HtxAdapter extends ExchangeAdapter {
                   updates.asks = [[updates.ask, parseFloat(parsed.tick.ask[1])]];
                 }
               } else if (parts[2] === 'funding_rate' && parsed.tick) {
-                console.log(`\n[HTX RAW funding_rate] ${JSON.stringify(parsed)}`);
+
                 if (parsed.tick.funding_rate) {
                   updates.fundingRate = parseFloat(parsed.tick.funding_rate);
-                  console.log(`[HTX PARSED] symbol: ${symbol}, updates: ${JSON.stringify(updates)}`);
+
                 }
               }
 
@@ -1078,10 +1085,64 @@ class BlofinAdapter extends ExchangeAdapter {
     } catch (e) {
       this.triggerReconnect();
     }
+    }
   }
-}
 
-export class WebSocketManager extends EventEmitter {
+  class CoinSwitchAdapter extends ExchangeAdapter {
+    private socket: SocketV4 | null = null;
+    
+    connect() {
+      try {
+        this.socket = ioV4('wss://ws.coinswitch.co/exchange_2', {
+          path: '/pro/realtime-rates-socket/futures/exchange_2',
+          transports: ['websocket'],
+        });
+  
+        this.socket.on('connect', () => {
+          this.updateStatus('Connected', 0);
+          this.symbols.forEach(s => {
+            this.socket?.emit('FETCH_TICKER_INFO_CS_PRO', { event: 'subscribe', pair: s + 'USDT' });
+          });
+        });
+  
+        this.socket.on('cs_pro_ticker_info', (msg: any) => {
+          try {
+            const updates: Partial<UnifiedPrice> = {};
+            if (msg.p) updates.markPrice = parseFloat(msg.p);
+            if (msg.r) updates.fundingRate = parseFloat(msg.r);
+            if (msg.c) {
+              updates.bid = parseFloat(msg.c);
+              updates.ask = parseFloat(msg.c);
+            }
+            if (msg.T) {
+               updates.nextFunding = new Date(parseInt(msg.T)).toISOString();
+            }
+            if (Object.keys(updates).length > 0 && msg.i) {
+              this.updatePrice(msg.i, updates, Date.now());
+            }
+          } catch (e) {}
+        });
+  
+        this.socket.on('disconnect', () => this.triggerReconnect());
+        this.socket.on('connect_error', () => {
+          this.socket?.disconnect();
+          this.triggerReconnect();
+        });
+      } catch (e) {
+        this.triggerReconnect();
+      }
+    }
+  
+    protected disconnect() {
+      super.disconnect();
+      if (this.socket) {
+        this.socket.disconnect();
+        this.socket = null;
+      }
+    }
+  }
+  
+  export class WebSocketManager extends EventEmitter {
   private adapters: Map<ExchangeName, ExchangeAdapter> = new Map();
   private statuses: Map<ExchangeName, WsStatus> = new Map();
   private prices: Map<string, UnifiedPrice> = new Map(); // key: "EXCHANGE:SYMBOL"
@@ -1089,6 +1150,7 @@ export class WebSocketManager extends EventEmitter {
   // Buffers for delta streaming
   private deltaPrices: Map<string, UnifiedPrice> = new Map();
   private statusesChanged: boolean = false;
+
 
   constructor() {
     super();
@@ -1108,6 +1170,7 @@ export class WebSocketManager extends EventEmitter {
     this.registerAdapter(new HtxAdapter('htx', symbols, this));
     this.registerAdapter(new HyperliquidAdapter('hyperliquid', symbols, this));
     this.registerAdapter(new BlofinAdapter('blofin', symbols, this));
+    this.registerAdapter(new CoinSwitchAdapter('coinswitch', symbols, this));
     
     // Broadcast flush interval
     setInterval(() => {
@@ -1161,20 +1224,14 @@ export class WebSocketManager extends EventEmitter {
       latencyMs
     });
     
-    console.log({
-      exchange: ex,
-      source: 'ws',
-      connected: currentStatus.status === 'Connected',
-      lastMessageAt: timestamp,
-      latency: latencyMs
-    });
+
     
     this.emit('priceUpdate', newPrice);
     if (ex === 'binance' && Object.keys(updates).includes('fundingRate')) {
-      console.log('[BINANCE_SET_FUNDING]', sym, newPrice.fundingRate);
+      // debug log removed
     }
     if (ex === 'binance') {
-      console.log('[BINANCE_FINAL_STATE]', sym, 'fundingRate:', newPrice.fundingRate);
+      // debug log removed
     }
   }
 
@@ -1186,15 +1243,21 @@ export class WebSocketManager extends EventEmitter {
     return Array.from(this.statuses.values());
   }
 
-  public reconnect(ex: ExchangeName, connectFn: () => void) {
-    const current = this.statuses.get(ex)!;
+  public reconnect(ex: ExchangeName, connectFn: () => void): NodeJS.Timeout {
+    const current = this.statuses.get(ex);
+    const count = (current && typeof current.reconnectCount === 'number' && !isNaN(current.reconnectCount)) 
+      ? current.reconnectCount 
+      : 0;
+
     this.updateStatus(ex, { 
       status: 'Reconnecting', 
-      reconnectCount: current.reconnectCount + 1 
+      reconnectCount: count + 1 
     });
     
-    const delay = Math.min(1000 * Math.pow(2, current.reconnectCount), 30000);
-    setTimeout(connectFn, delay);
+    let delay = Math.min(1000 * Math.pow(2, count), 30000);
+    if (isNaN(delay) || delay < 1000) delay = 1000; // Force valid >=1s delay
+    
+    return setTimeout(connectFn, delay);
   }
 
   public connectAll() {

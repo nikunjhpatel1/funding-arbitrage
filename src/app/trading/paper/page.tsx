@@ -2,10 +2,12 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { Activity, Wallet, History, AlertTriangle, ArrowRightLeft, Target, Trophy, ChevronDown, ChevronUp, Zap, TrendingUp, TrendingDown } from 'lucide-react';
-import type { PaperPosition } from '@/app/api/paper-trading/route';
-export type PaperPosition = PaperPosition & { trade_mode?: string };
+import type { PaperPosition as BasePaperPosition } from '@/app/api/paper-trading/route';
+export type PaperPosition = BasePaperPosition & { trade_mode?: string };
 import { type OrderBook, calculateSlippage } from '@/lib/slippage';
 import SymbolSearch from '@/components/SymbolSearch';
+import { usePriceStream } from '@/hooks/usePriceStream';
+import { usePriceStore } from '@/store/prices';
 
 import { TAKER_FEES } from '@/lib/constants';
 
@@ -172,6 +174,7 @@ const NetArbPanel = ({
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function PaperTradingPage() {
+  usePriceStream();
   const [positions, setPositions]       = useState<PaperPosition[]>([]);
   const [loading, setLoading]           = useState(true);
   const [expandedPos, setExpandedPos]   = useState<string | null>(null);
@@ -313,9 +316,14 @@ export default function PaperTradingPage() {
 
     const market = marketData.find(m => m.symbol === symbol);
     if (!market) { alert('No funding data available for this symbol'); return; }
-
-    const longRate  = market[longExchange];
-    const shortRate = market[shortExchange];
+    
+    const cleanSymbol = symbol.replace('/', '');
+    const livePriceState = usePriceStore.getState().pricesMap;
+    const liveLongRate = livePriceState[`${cleanSymbol}-${longExchange}`]?.fundingRate;
+    const liveShortRate = livePriceState[`${cleanSymbol}-${shortExchange}`]?.fundingRate;
+    
+    const longRate  = liveLongRate ?? market[longExchange];
+    const shortRate = liveShortRate ?? market[shortExchange];
     if (typeof longRate !== 'number' || typeof shortRate !== 'number') {
       alert('No funding data available on selected exchanges'); return;
     }
@@ -338,8 +346,10 @@ export default function PaperTradingPage() {
     // STRICT: require exchange-specific mark prices — NEVER use shared market.price fallback.
     // If an exchange doesn't list this token, market.price (from another exchange) would make
     // both entry prices identical, which is a silent data corruption.
-    const longEntryPrice  = market.exchangePrices?.[longExchange];
-    const shortEntryPrice = market.exchangePrices?.[shortExchange];
+    const liveLongPrice = livePriceState[`${cleanSymbol}-${longExchange}`]?.markPrice;
+    const liveShortPrice = livePriceState[`${cleanSymbol}-${shortExchange}`]?.markPrice;
+    const longEntryPrice  = liveLongPrice ?? market.exchangePrices?.[longExchange];
+    const shortEntryPrice = liveShortPrice ?? market.exchangePrices?.[shortExchange];
 
     if (longEntryPrice == null) {
       alert(`❌ ${longExchange.toUpperCase()} does not have a price for ${symbol}. This token may not be listed on ${longExchange.toUpperCase()} perpetuals.\n\nPlease select a different Long exchange that lists this token.`);

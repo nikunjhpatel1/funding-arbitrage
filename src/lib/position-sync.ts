@@ -61,7 +61,7 @@ export class PositionSync {
           });
           
           const accInfo = await client.getAccountInformation();
-          const activePos = accInfo.positions.filter(p => parseFloat(p.positionAmt) !== 0);
+          const activePos = accInfo.positions.filter(p => parseFloat(String(p.positionAmt)) !== 0);
 
           for (const dbPos of exchangePositions) {
             const sym = dbPos.symbol.replace('/', '');
@@ -69,8 +69,8 @@ export class PositionSync {
             
             if (remotePos) {
               await supabase.from(positionTableName).update({
-                unrealized_pnl: parseFloat(remotePos.unrealizedProfit),
-                current_price: parseFloat(remotePos.entryPrice), // or Mark price
+                unrealized_pnl: parseFloat(String(remotePos.unrealizedProfit)),
+                current_price: parseFloat(String(remotePos.entryPrice)), // or Mark price
               }).eq('id', dbPos.id);
             } else {
               // Position closed on exchange directly
@@ -97,8 +97,8 @@ export class PositionSync {
 
             if (remotePos) {
               await supabase.from(positionTableName).update({
-                unrealized_pnl: parseFloat(remotePos.unrealisedPnl),
-                current_price: parseFloat(remotePos.markPrice),
+                unrealized_pnl: parseFloat(String(remotePos.unrealisedPnl)),
+                current_price: parseFloat(String(remotePos.markPrice)),
               }).eq('id', dbPos.id);
             } else {
               await supabase.from(positionTableName).update({

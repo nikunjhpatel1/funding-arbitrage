@@ -82,6 +82,8 @@ export default function TradePage() {
   const cleanSymbol = baseAsset + 'USDT';
   const liveLongPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${longExchange}`]?.markPrice);
   const liveShortPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${shortExchange}`]?.markPrice);
+  const liveLongFundingRate = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${longExchange}`]?.fundingRate);
+  const liveShortFundingRate = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${shortExchange}`]?.fundingRate);
 
   useEffect(() => {
     async function load() {
@@ -141,12 +143,12 @@ export default function TradePage() {
     load();
   }, [baseAsset]);
 
-  const longRate = coinData && longExchange ? 
+  const longRate = liveLongFundingRate ?? (coinData && longExchange ? 
     coinData[longExchange as keyof FundingRateEntry] as number | null 
-    : null;
-  const shortRate = coinData && shortExchange ? 
+    : null);
+  const shortRate = liveShortFundingRate ?? (coinData && shortExchange ? 
     coinData[shortExchange as keyof FundingRateEntry] as number | null 
-    : null;
+    : null);
     
   const shortInterval = (coinData?.exchangeIntervals?.[shortExchange]) ?? 8;
   const longInterval = (coinData?.exchangeIntervals?.[longExchange]) ?? 8;

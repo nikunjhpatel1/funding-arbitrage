@@ -67,7 +67,7 @@ export class ExecutionEngine {
       
       // Get execution price (fallback to simple ticker if not instantly filled in market order response)
       // Usually averagePrice is in the response for MARKET orders if filled.
-      currentPrice = parseFloat(order.avgPrice || '0');
+      currentPrice = parseFloat(String(order.avgPrice || '0'));
       if (currentPrice === 0) {
         const ticker = await client.getMarkPrice({ symbol: symbol.replace('/', '') });
         currentPrice = parseFloat(ticker.markPrice as string);

@@ -5,11 +5,15 @@ import { USDMClient } from 'binance';
 import { RestClientV5 } from 'bybit-api';
 
 async function logExecution(level: string, message: string, positionId?: string | null) {
-  await supabase.from('execution_logs').insert({
-    position_id: positionId || null,
-    log_level: level,
-    message: message
-  }).catch(e => console.error("Failed to write to execution_logs:", e));
+  try {
+    await supabase.from('execution_logs').insert({
+      position_id: positionId || null,
+      log_level: level,
+      message: message
+    });
+  } catch (e) {
+    console.error("Failed to write to execution_logs:", e);
+  }
 }
 
 async function getBinanceKeys(): Promise<{ apiKey: string; secret: string }> {
@@ -136,22 +140,26 @@ export async function POST(req: Request) {
     await supabase.from('real_positions').update({ status: 'CLOSED', closed_at: new Date().toISOString() }).eq('id', positionId);
     
     // Log history
-    await supabase.from('real_trade_history').insert([
-      {
-        position_id: positionId,
-        event_type: 'EXIT_LONG',
-        exchange: longExchange,
-        order_id: results.longClose?.orderId?.toString() || results.longClose?.result?.orderId?.toString() || null,
-        quantity: qty
-      },
-      {
-        position_id: positionId,
-        event_type: 'EXIT_SHORT',
-        exchange: shortExchange,
-        order_id: results.shortClose?.orderId?.toString() || results.shortClose?.result?.orderId?.toString() || null,
-        quantity: qty
-      }
-    ]).catch(e => console.error("Failed to log close history:", e));
+    try {
+      await supabase.from('real_trade_history').insert([
+        {
+          position_id: positionId,
+          event_type: 'EXIT_LONG',
+          exchange: longExchange,
+          order_id: results.longClose?.orderId?.toString() || results.longClose?.result?.orderId?.toString() || null,
+          quantity: qty
+        },
+        {
+          position_id: positionId,
+          event_type: 'EXIT_SHORT',
+          exchange: shortExchange,
+          order_id: results.shortClose?.orderId?.toString() || results.shortClose?.result?.orderId?.toString() || null,
+          quantity: qty
+        }
+      ]);
+    } catch (e) {
+      console.error("Failed to log close history:", e);
+    }
     
     await logExecution('INFO', `Successfully closed position ${positionId}`, positionId);
 

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { TrendingUp, AlertTriangle, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
+import { EXCHANGE_NAMES, TOTAL_EXCHANGES } from '@/lib/exchanges';
 import StatsGrid from '@/components/StatsGrid';
 import FundingRateTable, { type EnrichedRow } from '@/components/FundingRateTable';
 
@@ -31,6 +32,7 @@ interface FundingRateEntry {
   phemex: number | null;
   blofin: number | null;
   delta: number | null;
+  coinswitch: number | null;
   maxSpread: number;
   opportunity: 'hot' | 'mild' | 'low';
   nextFunding: string;
@@ -45,14 +47,6 @@ interface ApiResponse {
   updatedAt: string;
   exchangeStatus: Record<string, 'ok' | 'stale' | 'error'>;
 }
-
-const EXCHANGE_LABELS: Record<string, string> = {
-  binance: 'Binance', bybit: 'Bybit', okx: 'OKX',
-  bitget: 'Bitget', kucoin: 'KuCoin', gateio: 'Gate.io',
-  mexc: 'MEXC', bingx: 'BingX', htx: 'HTX', bitmex: 'BitMEX',
-  dydx: 'dYdX', hyperliquid: 'Hyperliquid', phemex: 'Phemex',
-  blofin: 'BloFin', delta: 'Delta',
-};
 
 export default function HomePage() {
   const [apiData, setApiData] = useState<ApiResponse | null>(null);
@@ -117,10 +111,6 @@ export default function HomePage() {
     return () => clearInterval(id);
   }, [fetchData]);
 
-  // DO NOT add any other setInterval for now
-  // The price refresh can be added later
-  // once the main data loads correctly
-
   return (
     <>
       <section className="hero animate-fade-up">
@@ -135,17 +125,15 @@ export default function HomePage() {
           <span>Made Simple</span>
         </h1>
         <p className="hero-subtitle">
-          Live funding rates from <strong>15 exchanges</strong> — Binance, Bybit, OKX, 
-          Bitget, KuCoin, Gate.io, MEXC, BingX, HTX, BitMEX, dYdX, Hyperliquid, Phemex, 
-          BloFin & Delta Exchange. Fetches <strong>all 200–400+ perpetual pairs</strong>, 
+          Live funding rates from <strong>{TOTAL_EXCHANGES} exchanges</strong> — {Object.values(EXCHANGE_NAMES).join(', ')}. Fetches <strong>all 200–400+ perpetual pairs</strong>, 
           sorted by max spread.
         </p>
       </section>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '1rem' }}>
         <div className="exchange-status-bar" style={{ marginBottom: 0 }}>
-          {Object.entries(EXCHANGE_LABELS).map(([key, label]) => {
-            const status = apiData?.exchangeStatus?.[key];
+          {Object.entries(EXCHANGE_NAMES).map(([key, label]) => {
+            const status = apiData?.exchangeStatus?.[key] || 'loading';
             return (
               <div key={key} className={`exchange-status-chip ${
                 status === 'error' ? 'error' : status === 'stale' ? 'stale' : status === 'ok' ? 'ok' : 'loading'
@@ -231,7 +219,7 @@ export default function HomePage() {
         }}>
           <Loader2 size={18} className="spin" 
             style={{ color: 'var(--accent-blue)' }} />
-          Fetching live rates from 15 exchanges…
+          Fetching live rates from {TOTAL_EXCHANGES} exchanges…
           <span style={{ fontSize: '0.75rem', opacity: 0.6 }}>
             (may take a few seconds)
           </span>

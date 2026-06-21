@@ -44,7 +44,7 @@ async function testBybit(apiKey: string, secret: string, mode: string) {
   });
 
   try {
-    const res = await client.getApiKeyInformation();
+    const res = await client.getQueryApiKey();
 
     if (res.retCode !== 0) {
       throw new Error(res.retMsg || 'Bybit connection failed');

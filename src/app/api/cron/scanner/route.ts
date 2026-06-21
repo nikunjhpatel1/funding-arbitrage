@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
+import { ALL_EXCHANGES_CONFIG } from '@/lib/exchanges';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -25,6 +26,7 @@ const KUCOIN_FUND_RATE = (sym: string) => `https://api-futures.kucoin.com/api/v1
 const BINGX_FUND_RATE = (b: string) => `https://open-api.bingx.com/openApi/swap/v2/quote/fundingRate?symbol=${b}-USDT`;
 const HTX_FUND_RATE = (b: string) => `https://api.hbdm.com/swap-api/v1/swap_funding_rate?contract_code=${b}-USD`;
 const BLOFIN_FUND_RATE = (b: string) => `https://openapi.blofin.com/api/v1/market/funding-rate?instId=${b}-USDT`;
+const COINSWITCH_TICKER = (sym: string) => `https://coinswitch.co/trade/api/v2/futures/ticker?symbol=${sym}&exchange=EXCHANGE_2`;
 
 // Per-exchange HTTP timeout: longer in dev (Windows DNS serialization overhead),
 // tight in production to stay within Vercel Hobby's 10 s serverless limit.
@@ -47,6 +49,7 @@ const EXCHANGE_REFRESH_MS: Record<string, number> = {
   phemex:      180_000,
   blofin:      300_000,
   delta:       300_000,
+  coinswitch:  60_000,
 };
 
 const lastFetchTime: Record<string, number> = {};
@@ -116,6 +119,7 @@ export interface FundingRateEntry {
   phemex: number | null;
   blofin: number | null;
   delta: number | null;
+  coinswitch: number | null;
   exchangeIntervals: Record<string, number>;
   exchangePrices: Record<string, number>;
   exchangeNextFunding: Record<string, string>;
@@ -224,9 +228,10 @@ interface PriceStats {
   volume24h: number;
   openInterest: number;
   nextFunding: string;
+  intervalHours?: number;
 }
 interface BinanceData extends PriceStats { rate: number; }
-interface SimpleRateData { rate: number; nextFunding?: string; price?: number; }
+interface SimpleRateData { rate: number; nextFunding?: string; price?: number; intervalHours?: number; }
 interface DydxData extends PriceStats { rate: number; }
 
 interface FetchResult<T> { data: Map<string, T>; ok: boolean; }
@@ -305,7 +310,7 @@ async function fetchBybit(): Promise<FetchResult<SimpleRateData>> {
     const res = await fetchWithTimeout(BYBIT_TICKERS);
     if (!res.ok) return { data, ok: false };
     const json = await res.json();
-    const list: Array<{ symbol: string; fundingRate: string; nextFundingTime: string; lastPrice?: string }> =
+    const list: Array<{ symbol: string; fundingRate: string; nextFundingTime: string; lastPrice?: string; fundingIntervalHour?: string }> =
       json?.result?.list ?? [];
 
     for (const item of list) {
@@ -316,7 +321,8 @@ async function fetchBybit(): Promise<FetchResult<SimpleRateData>> {
       data.set(base, {
         rate,
         nextFunding: new Date(Number(item.nextFundingTime)).toISOString(),
-        price: Number(item.lastPrice)
+        price: Number(item.lastPrice),
+        intervalHours: item.fundingIntervalHour ? Number(item.fundingIntervalHour) : undefined,
       });
     }
     return { data, ok: data.size > 0 };
@@ -335,7 +341,7 @@ async function fetchGateio(): Promise<FetchResult<SimpleRateData>> {
   try {
     const res = await fetchWithTimeout(GATE_CONTRACTS);
     if (!res.ok) return { data, ok: false };
-    const list: Array<{ name: string; funding_rate: string; next_funding_time: number; last_price?: string; mark_price?: string }> =
+    const list: Array<{ name: string; funding_rate: string; next_funding_time: number; last_price?: string; mark_price?: string; funding_interval?: number }> =
       await res.json();
 
     for (const item of list) {
@@ -348,7 +354,8 @@ async function fetchGateio(): Promise<FetchResult<SimpleRateData>> {
         nextFunding: item.next_funding_time
           ? new Date(item.next_funding_time * 1000).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
-        price: Number(item.last_price || item.mark_price)
+        price: Number(item.last_price || item.mark_price),
+        intervalHours: item.funding_interval ? Math.round(item.funding_interval / 3600) : undefined,
       });
     }
     return { data, ok: data.size > 0 };
@@ -383,7 +390,8 @@ async function fetchBitMEX(): Promise<FetchResult<SimpleRateData>> {
         nextFunding: inst.fundingTimestamp
           ? new Date(inst.fundingTimestamp).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
-        price: inst.lastPrice ?? inst.markPrice ?? undefined
+        price: inst.lastPrice ?? inst.markPrice ?? undefined,
+        intervalHours: 8,
       });
     }
     return { data, ok: data.size > 0 };
@@ -434,6 +442,7 @@ async function fetchPhemex(): Promise<FetchResult<SimpleRateData>> {
           nextFunding: nextTs > 0
             ? new Date(nextTs * 1000).toISOString()
             : new Date(Date.now() + 28_800_000).toISOString(),
+          intervalHours: undefined,
         });
       }
     } else {
@@ -459,6 +468,7 @@ async function fetchPhemex(): Promise<FetchResult<SimpleRateData>> {
           nextFunding: nextTs > 0
             ? new Date(nextTs > 1e12 ? nextTs : nextTs * 1000).toISOString()
             : new Date(Date.now() + 28_800_000).toISOString(),
+          intervalHours: tick.fundingInterval ? Number(tick.fundingInterval) : undefined,
         });
       }
     }
@@ -511,6 +521,7 @@ async function fetchDelta(): Promise<FetchResult<SimpleRateData>> {
         nextFunding: ticker.next_funding_realization
           ? new Date(ticker.next_funding_realization).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
+        intervalHours: (ticker as any).funding_interval ? Number((ticker as any).funding_interval) : undefined,
       });
     }
     return { data, ok: data.size > 0 };
@@ -551,6 +562,7 @@ async function fetchDydx(): Promise<FetchResult<DydxData>> {
         volume24h: parseFloat(mkt.volume24H),
         openInterest: parseFloat(mkt.openInterest) * oraclePrice,
         nextFunding: mkt.nextFundingAt ?? new Date(Date.now() + 3_600_000).toISOString(),
+        intervalHours: 1,
       });
     }
     return { data, ok: data.size > 0 };
@@ -590,6 +602,7 @@ async function fetchHyperliquid(): Promise<FetchResult<SimpleRateData>> {
       data.set(base, {
         rate: hourlyRate,
         nextFunding: nextHour.toISOString(),
+        intervalHours: 1,
       });
     }
     return { data, ok: data.size > 0 };
@@ -609,7 +622,7 @@ async function fetchOKX(bases: Iterable<string>, deadline: number): Promise<Fetc
   const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
     if (Date.now() > deadline) return;
 
     try {
@@ -620,7 +633,11 @@ async function fetchOKX(bases: Iterable<string>, deadline: number): Promise<Fetc
       if (!d) return;
       const rate = parseRate(d.fundingRate);
       if (rate === null) return;
-      data.set(base, { rate, nextFunding: new Date(Number(d.fundingTime)).toISOString() });
+      data.set(base, { 
+        rate, 
+        nextFunding: new Date(Number(d.fundingTime)).toISOString(),
+        intervalHours: d.nextFundingTime && d.fundingTime ? Math.round((Number(d.nextFundingTime) - Number(d.fundingTime)) / 3600000) : undefined,
+      });
       anySuccess = true;
     } catch { /* instrument may not exist on OKX */ }
   })));
@@ -635,8 +652,7 @@ async function fetchBitget(bases: Iterable<string>, deadline: number): Promise<F
   const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
-    if (Date.now() > deadline) return;
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
 
     try {
       const res = await fetchWithTimeout(BITGET_FUND_RATE(base));
@@ -652,6 +668,7 @@ async function fetchBitget(bases: Iterable<string>, deadline: number): Promise<F
         nextFunding: d.fundingTime
           ? new Date(Number(d.fundingTime)).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
+        intervalHours: d.fundingIntervalHours ? Number(d.fundingIntervalHours) : undefined,
       });
       anySuccess = true;
     } catch { }
@@ -667,7 +684,7 @@ async function fetchMEXC(bases: Iterable<string>, deadline: number): Promise<Fet
   const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
     if (Date.now() > deadline) return;
 
     try {
@@ -684,6 +701,7 @@ async function fetchMEXC(bases: Iterable<string>, deadline: number): Promise<Fet
         nextFunding: d.nextSettleTime
           ? new Date(Number(d.nextSettleTime)).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
+        intervalHours: d.collectCycle ? Number(d.collectCycle) : undefined,
       });
       anySuccess = true;
     } catch { }
@@ -701,7 +719,7 @@ async function fetchKuCoin(bases: Iterable<string>, deadline: number): Promise<F
   let anySuccess = false;
   const kuCoinSym = (b: string) => b === 'BTC' ? 'XBTUSDTM' : `${b}USDTM`;
 
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
     if (Date.now() > deadline) return;
 
     try {
@@ -718,6 +736,7 @@ async function fetchKuCoin(bases: Iterable<string>, deadline: number): Promise<F
         nextFunding: d.timePoint
           ? new Date(Number(d.timePoint)).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
+        intervalHours: d.granularity ? Math.round(Number(d.granularity) / 3600000) : undefined,
       });
       anySuccess = true;
     } catch { /* instrument may not exist on kucoin */ }
@@ -733,7 +752,7 @@ async function fetchBingX(bases: Iterable<string>, deadline: number): Promise<Fe
   const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
     if (Date.now() > deadline) return;
 
     try {
@@ -750,6 +769,7 @@ async function fetchBingX(bases: Iterable<string>, deadline: number): Promise<Fe
         nextFunding: d.nextFundingTime
           ? new Date(Number(d.nextFundingTime)).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
+        intervalHours: undefined, // interval not provided by API, defaulting to 8h - verify if incorrect
       });
       anySuccess = true;
     } catch { }
@@ -765,7 +785,7 @@ async function fetchHTX(bases: Iterable<string>, deadline: number): Promise<Fetc
   const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
     if (Date.now() > deadline) return;
 
     try {
@@ -782,6 +802,7 @@ async function fetchHTX(bases: Iterable<string>, deadline: number): Promise<Fetc
         nextFunding: d.next_funding_time
           ? new Date(Number(d.next_funding_time)).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
+        intervalHours: undefined, // interval not provided by API, defaulting to 8h - verify if incorrect
       });
       anySuccess = true;
     } catch { }
@@ -797,7 +818,7 @@ async function fetchBloFin(bases: Iterable<string>, deadline: number): Promise<F
   const limit = pLimit(20);
   const data = new Map<string, SimpleRateData>();
   let anySuccess = false;
-  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {    if (Date.now() > deadline) return;
     if (Date.now() > deadline) return;
 
     try {
@@ -814,9 +835,49 @@ async function fetchBloFin(bases: Iterable<string>, deadline: number): Promise<F
         nextFunding: d.nextFundingTime
           ? new Date(Number(d.nextFundingTime)).toISOString()
           : new Date(Date.now() + 28_800_000).toISOString(),
+        intervalHours: undefined, // interval not provided by API, defaulting to 8h - verify if incorrect
       });
       anySuccess = true;
     } catch { }
+  })));
+  return { data, ok: anySuccess || data.size > 0 };
+}
+
+/**
+ * CoinSwitch Pro
+ * Field: funding_rate from /api/v2/futures/ticker
+ */
+async function fetchCoinSwitch(bases: Iterable<string>, deadline: number): Promise<FetchResult<SimpleRateData>> {
+  const limit = pLimit(5); // Lower concurrency to respect 100 requests / 60 seconds
+  const data = new Map<string, SimpleRateData>();
+  let anySuccess = false;
+  let reqCount = 0;
+  
+  await Promise.allSettled([...bases].map(async (base) => limit(async () => {
+    if (Date.now() > deadline) return;
+    
+    reqCount++;
+    if (reqCount % 10 === 0) await new Promise(r => setTimeout(r, 600)); // Throttle
+
+    try {
+      const sym = `${base}USDT`;
+      const res = await fetchWithTimeout(COINSWITCH_TICKER(sym));
+      if (!res.ok) return;
+      const json = await res.json();
+      const d = json?.data?.EXCHANGE_2;
+      if (!d) return;
+      
+      const rate = parseRate(d.funding_rate);
+      if (rate === null) return;
+      
+      data.set(base, { 
+        rate, 
+        nextFunding: d.next_funding_timestamp ? new Date(Number(d.next_funding_timestamp)).toISOString() : new Date(Date.now() + 28_800_000).toISOString(),
+        price: parseRate(d.last_price) ?? undefined,
+        intervalHours: undefined, // interval not provided by API, defaulting to 8h - verify if incorrect
+      });
+      anySuccess = true;
+    } catch { /* instrument may not exist */ }
   })));
   return { data, ok: anySuccess || data.size > 0 };
 }
@@ -886,7 +947,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
 
   const [
     binance, bybit, gateio, bitmex, phemex, delta, dydx, hyperliquid,
-    okx, bitget, mexc, kucoin, bingx, htx, blofin
+    okx, bitget, mexc, kucoin, bingx, htx, blofin, coinswitch
   ] = await Promise.all([
     // Batch
     withDeadline(getCachedOrFetch('binance', () => fetchBinance()), deadlineMs).then(r => r ?? { data: new Map(), intervalMap: new Map(), ok: false }),
@@ -905,6 +966,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     getCachedOrFetch('bingx', () => fetchBingX(phase2Bases, deadline)),
     getCachedOrFetch('htx', () => fetchHTX(phase2Bases, deadline)),
     getCachedOrFetch('blofin', () => fetchBloFin(phase2Bases, deadline)),
+    getCachedOrFetch('coinswitch', () => fetchCoinSwitch(phase2Bases, deadline)),
   ]);
 
   // Build the master base set from all batch results
@@ -925,6 +987,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
   for (const [b] of kucoin.data) allBases.add(b);
   for (const [b] of bingx.data) allBases.add(b);
   for (const [b] of blofin.data) allBases.add(b);
+  for (const [b] of coinswitch.data) allBases.add(b);
 
   const exchangeStatus: Record<string, 'ok' | 'stale' | 'error'> = {
     binance: binance.ok ? 'ok' : (binance as any).fromCache ? 'stale' : 'error',
@@ -942,6 +1005,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     phemex: phemex.ok ? 'ok' : (phemex as any).fromCache ? 'stale' : 'error',
     blofin: blofin.ok ? 'ok' : (blofin as any).fromCache ? 'stale' : 'error',
     delta: delta.ok ? 'ok' : (delta as any).fromCache ? 'stale' : 'error',
+    coinswitch: coinswitch.ok ? 'ok' : (coinswitch as any).fromCache ? 'stale' : 'error',
   };
 
   // ── Assemble entries ──────────────────────────────────────────────────────
@@ -963,6 +1027,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     const pxD = phemex.data.get(base);
     const bfD = blofin.data.get(base);
     const dlD = delta.data.get(base);
+    const csD = coinswitch.data.get(base);
 
     const binRate = binD?.rate ?? null;
     const byRate = byD?.rate ?? null;
@@ -979,11 +1044,12 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     const pxRate = pxD?.rate ?? null;
     const bfRate = bfD?.rate ?? null;
     const dlRate = dlD?.rate ?? null;
+    const csRate = csD?.rate ?? null;
 
     const validRates = [
       binRate, byRate, okRate, dyRate, hlRate,
       bgRate, gtRate, mxRate, kcRate, bxRate,
-      hxRate, bmRate, pxRate, bfRate, dlRate,
+      hxRate, bmRate, pxRate, bfRate, dlRate, csRate
     ].filter((r): r is number => r !== null);
 
     // Skip pairs with no data at all
@@ -993,21 +1059,23 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     const fundingIntervalHours = binance.intervalMap.get(base) ?? 8;
     const exchangeIntervals: Record<string, number> = {
       binance: fundingIntervalHours,
-      bybit: 8,
-      okx: 8,
-      bitget: 8,
-      kucoin: 8,
-      gateio: 8,
-      mexc: 8,
-      bingx: 8,
-      htx: 8,
-      bitmex: 8,
-      dydx: 1,
-      hyperliquid: 1,
-      phemex: 8,
-      blofin: 8,
-      delta: 8,
+      bybit: byD?.intervalHours ?? fundingIntervalHours,
+      okx: okD?.intervalHours ?? fundingIntervalHours,
+      bitget: bgD?.intervalHours ?? fundingIntervalHours,
+      kucoin: kcD?.intervalHours ?? fundingIntervalHours,
+      gateio: gtD?.intervalHours ?? fundingIntervalHours,
+      mexc: mxD?.intervalHours ?? fundingIntervalHours,
+      bingx: bxD?.intervalHours ?? fundingIntervalHours,
+      htx: hxD?.intervalHours ?? fundingIntervalHours,
+      bitmex: bmD?.intervalHours ?? fundingIntervalHours,
+      dydx: dyD?.intervalHours ?? 1,
+      hyperliquid: hlD?.intervalHours ?? 1,
+      phemex: pxD?.intervalHours ?? fundingIntervalHours,
+      blofin: bfD?.intervalHours ?? fundingIntervalHours,
+      delta: dlD?.intervalHours ?? fundingIntervalHours,
+      coinswitch: csD?.intervalHours ?? fundingIntervalHours,
     };
+
 
     const normalizedRates = [
       binRate !== null ? binRate * (8 / exchangeIntervals.binance) : null,
@@ -1025,6 +1093,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
       pxRate !== null ? pxRate * (8 / exchangeIntervals.phemex) : null,
       bfRate !== null ? bfRate * (8 / exchangeIntervals.blofin) : null,
       dlRate !== null ? dlRate * (8 / exchangeIntervals.delta) : null,
+      csRate !== null ? csRate * (8 / exchangeIntervals.coinswitch) : null,
     ].filter((r): r is number => r !== null);
 
     const maxSpread = normalizedRates.length > 1
@@ -1043,7 +1112,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
       binD?.nextFunding, byD?.nextFunding, okD?.nextFunding, dyD?.nextFunding,
       hlD?.nextFunding, bgD?.nextFunding, gtD?.nextFunding, mxD?.nextFunding,
       kcD?.nextFunding, bxD?.nextFunding, hxD?.nextFunding, bmD?.nextFunding,
-      pxD?.nextFunding, bfD?.nextFunding, dlD?.nextFunding,
+      pxD?.nextFunding, bfD?.nextFunding, dlD?.nextFunding, csD?.nextFunding
     ].filter(Boolean) as string[];
     const nextFunding = fundingTimes.length > 0
       ? fundingTimes.reduce((a, b) => (new Date(a) < new Date(b) ? a : b))
@@ -1065,6 +1134,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     if (pxRate === null && phemex.ok) exchangeErrors.push('phemex');
     if (bfRate === null && blofin.ok) exchangeErrors.push('blofin');
     if (dlRate === null && delta.ok) exchangeErrors.push('delta');
+    if (csRate === null && coinswitch.ok) exchangeErrors.push('coinswitch');
 
     const exchangePrices: Record<string, number> = {};
     if (binRate !== null && binD?.price != null) exchangePrices.binance = binD.price;
@@ -1082,6 +1152,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     if (pxRate !== null && (pxD as any)?.price != null) exchangePrices.phemex = (pxD as any).price;
     if (bfRate !== null && (bfD as any)?.price != null) exchangePrices.blofin = (bfD as any).price;
     if (dlRate !== null && (dlD as any)?.price != null) exchangePrices.delta = (dlD as any).price;
+    if (csRate !== null && (csD as any)?.price != null) exchangePrices.coinswitch = (csD as any).price;
 
     const exchangeNextFunding: Record<string, string> = {};
     if (binD?.nextFunding) exchangeNextFunding.binance = binD.nextFunding;
@@ -1099,6 +1170,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     if (pxD?.nextFunding) exchangeNextFunding.phemex = pxD.nextFunding;
     if (bfD?.nextFunding) exchangeNextFunding.blofin = bfD.nextFunding;
     if (dlD?.nextFunding) exchangeNextFunding.delta = dlD.nextFunding;
+    if (csD?.nextFunding) exchangeNextFunding.coinswitch = csD.nextFunding;
 
     entries.push({
       id: `${base}-USDT`,
@@ -1126,6 +1198,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
       phemex: pxRate,
       blofin: bfRate,
       delta: dlRate,
+      coinswitch: csRate,
       exchangeIntervals,
       exchangePrices,
       exchangeNextFunding,
@@ -1222,13 +1295,10 @@ async function saveHistoricalData(entries: FundingRateEntry[]) {
     }
 
     const rows: HistoryRow[] = [];
-    const exchangesList = [
-      'binance', 'bybit', 'okx', 'bitget', 'kucoin', 'gateio', 'mexc',
-      'bingx', 'htx', 'bitmex', 'dydx', 'hyperliquid', 'phemex', 'blofin', 'delta'
-    ];
+    const EXCHANGE_NAMES = ALL_EXCHANGES_CONFIG.map(ex => ex.id);
 
     for (const entry of entries) {
-      for (const ex of exchangesList) {
+      for (const ex of EXCHANGE_NAMES) {
         const rate = entry[ex as keyof FundingRateEntry];
         if (typeof rate === 'number' && rate !== null) {
           const interval = entry.exchangeIntervals?.[ex] ?? 8;

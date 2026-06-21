@@ -117,11 +117,13 @@ export async function GET() {
   } catch (e: any) {
     console.error('[Demo Order] Error:', e.message);
     // Log failure to execution_logs too
-    await supabase.from('execution_logs').insert({
-      position_id: null,
-      log_level: 'ERROR',
-      message: `[Demo] Order failed: ${e.message}`,
-    }).catch(() => {});
+    try {
+      await supabase.from('execution_logs').insert({
+        position_id: null,
+        log_level: 'ERROR',
+        message: `[Demo] Order failed: ${e.message}`,
+      });
+    } catch (err) {}
     return NextResponse.json({ success: false, error: e.message });
   }
 }

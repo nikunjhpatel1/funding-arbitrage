@@ -10,8 +10,9 @@ export const TAKER_FEES: Record<string, number> = {
   htx:         0.0005,
   bitmex:      0.00075,
   dydx:        0.0005,
-  hyperliquid: 0.00035,
-  phemex:      0.0006,
-  blofin:      0.0005,
-  delta:       0.0005,
+  hyperliquid: 0.00035, // 0.035%
+  phemex:      0.0006,  // 0.06%
+  blofin:      0.0006,  // 0.06%
+  delta:       0.0005,  // 0.05%
+  coinswitch:  0.0005,  // TODO: verify actual fee
 };
