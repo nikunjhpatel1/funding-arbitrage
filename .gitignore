@@ -41,3 +41,6 @@ yarn-error.log*
 next-env.d.ts
 
 data/funding_history.db
+
+*.db
+data/*.db
