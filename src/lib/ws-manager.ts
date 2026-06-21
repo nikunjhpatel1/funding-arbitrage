@@ -1100,12 +1100,14 @@ class BlofinAdapter extends ExchangeAdapter {
   
         this.socket.on('connect', () => {
           this.updateStatus('Connected', 0);
+          console.log('[CoinSwitch] Connected! Subscribing to:', this.symbols);
           this.symbols.forEach(s => {
-            this.socket?.emit('FETCH_TICKER_INFO_CS_PRO', { event: 'subscribe', pair: s + 'USDT' });
+            this.socket?.emit('FETCH_TICKER_INFO_CS_PRO', { event: 'subscribe', pair: s });
           });
         });
   
         this.socket.on('cs_pro_ticker_info', (msg: any) => {
+          console.log('[CoinSwitch RAW]', msg);
           try {
             const updates: Partial<UnifiedPrice> = {};
             if (msg.p) updates.markPrice = parseFloat(msg.p);
