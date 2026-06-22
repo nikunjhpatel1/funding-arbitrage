@@ -234,6 +234,20 @@ export default function FundingRateTable({
     prevDeps.current = { data, activeExchangeKeys: null, livePrices, positionSize, onEnrichedDataChange };
   });
 
+  const hasSentInitialSymbols = useRef(false);
+
+  useEffect(() => {
+    if (data && data.length > 0 && !hasSentInitialSymbols.current) {
+      hasSentInitialSymbols.current = true;
+      const allSymbols = Array.from(new Set(data.map(r => r.symbol.replace('/', ''))));
+      fetch('/api/prices/update-symbols', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbols: allSymbols }),
+      }).catch(err => console.error('Failed to update symbols on load', err));
+    }
+  }, [data]);
+
 
   // Safety check - if data is invalid return empty
   if (!data || !Array.isArray(data)) {

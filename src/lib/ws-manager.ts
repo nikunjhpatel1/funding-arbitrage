@@ -1,5 +1,6 @@
 import { EventEmitter } from 'events';
 import { io as ioV4, Socket as SocketV4 } from 'socket.io-client-v4';
+import zlib from 'zlib';
 
 export type ExchangeName = 'binance' | 'bitget' | 'delta' | 'coinswitch' | string;
 
@@ -25,10 +26,19 @@ export interface WsStatus {
 }
 
 // Get symbols from environment or fallback
-const getSymbols = (): string[] => {
+const getSymbols = async (): Promise<string[]> => {
   const envSymbols = process.env.STREAM_SYMBOLS;
   if (envSymbols) {
     return envSymbols.split(',').map(s => s.trim().toUpperCase());
+  }
+  try {
+    const { supabase } = await import('@/lib/supabase');
+    const { data, error } = await supabase.from('scanner_cache').select('payload').eq('id', 1).single();
+    if (!error && data?.payload?.data && Array.isArray(data.payload.data)) {
+      return data.payload.data.map((row: any) => row.symbol.replace('/', ''));
+    }
+  } catch (err) {
+    console.error('[WS] failed to load symbols from cache', err);
   }
   return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
 };
@@ -550,13 +560,13 @@ class BingxAdapter extends ExchangeAdapter {
       this.ws.onmessage = async (event) => {
         try {
           let raw = event.data;
-          // BingX sends gzip-compressed binary frames in browsers this needs decompression,
-          // but in Node.js ws library it may already be a Buffer/string. Try plain parse first.
           let text: string;
           if (typeof raw === 'string') {
             text = raw;
           } else {
-            text = raw.toString();
+            // BingX swap-market frames are gzip-compressed — must decompress in Node too.
+            const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+            text = zlib.gunzipSync(buf).toString('utf-8');
           }
 
           if (text === 'Ping') {
@@ -586,7 +596,9 @@ class BingxAdapter extends ExchangeAdapter {
               this.updatePrice(symbol, updates, Date.now());
             }
           }
-        } catch (e) {}
+        } catch (e) {
+          console.error('[BingX] Parse error:', e);
+        }
       };
 
       this.ws.onclose = () => this.triggerReconnect();
@@ -665,7 +677,7 @@ class BitmexAdapter extends ExchangeAdapter {
 class PhemexAdapter extends ExchangeAdapter {
   connect() {
     try {
-      this.ws = new WebSocket('wss://vapi.phemex.com/ws');
+      this.ws = new WebSocket('wss://ws.phemex.com');
 
       this.ws.onopen = () => {
         this.updateStatus('Connected', 0);
@@ -724,7 +736,9 @@ class PhemexAdapter extends ExchangeAdapter {
               this.updatePrice(symbol, updates, Date.now());
             }
           }
-        } catch (e) {}
+        } catch (e) {
+          console.error('[Phemex] Parse error:', e);
+        }
       };
 
       this.ws.onclose = () => this.triggerReconnect();
@@ -1156,23 +1170,32 @@ class BlofinAdapter extends ExchangeAdapter {
 
   constructor() {
     super();
-    const symbols = getSymbols();
     
-    this.registerAdapter(new BinanceAdapter('binance', symbols, this));
-    this.registerAdapter(new BitgetAdapter('bitget', symbols, this));
-    this.registerAdapter(new DeltaAdapter('delta', symbols, this));
-    this.registerAdapter(new OkxAdapter('okx', symbols, this));
-    this.registerAdapter(new BybitAdapter('bybit', symbols, this));
-    this.registerAdapter(new KucoinAdapter('kucoin', symbols, this));
-    this.registerAdapter(new BingxAdapter('bingx', symbols, this));
-    this.registerAdapter(new BitmexAdapter('bitmex', symbols, this));
-    this.registerAdapter(new PhemexAdapter('phemex', symbols, this));
-    this.registerAdapter(new GateioAdapter('gate', symbols, this));
-    this.registerAdapter(new MexcAdapter('mexc', symbols, this));
-    this.registerAdapter(new HtxAdapter('htx', symbols, this));
-    this.registerAdapter(new HyperliquidAdapter('hyperliquid', symbols, this));
-    this.registerAdapter(new BlofinAdapter('blofin', symbols, this));
-    this.registerAdapter(new CoinSwitchAdapter('coinswitch', symbols, this));
+    // Create adapters with empty arrays initially
+    const initialSymbols: string[] = [];
+    
+    this.registerAdapter(new BinanceAdapter('binance', initialSymbols, this));
+    this.registerAdapter(new BitgetAdapter('bitget', initialSymbols, this));
+    this.registerAdapter(new DeltaAdapter('delta', initialSymbols, this));
+    this.registerAdapter(new OkxAdapter('okx', initialSymbols, this));
+    this.registerAdapter(new BybitAdapter('bybit', initialSymbols, this));
+    this.registerAdapter(new KucoinAdapter('kucoin', initialSymbols, this));
+    this.registerAdapter(new BingxAdapter('bingx', initialSymbols, this));
+    this.registerAdapter(new BitmexAdapter('bitmex', initialSymbols, this));
+    this.registerAdapter(new PhemexAdapter('phemex', initialSymbols, this));
+    this.registerAdapter(new GateioAdapter('gate', initialSymbols, this));
+    this.registerAdapter(new MexcAdapter('mexc', initialSymbols, this));
+    this.registerAdapter(new HtxAdapter('htx', initialSymbols, this));
+    this.registerAdapter(new HyperliquidAdapter('hyperliquid', initialSymbols, this));
+    this.registerAdapter(new BlofinAdapter('blofin', initialSymbols, this));
+    this.registerAdapter(new CoinSwitchAdapter('coinswitch', initialSymbols, this));
+    
+    // Load symbols asynchronously
+    getSymbols().then(symbols => {
+      this.updateSymbols(symbols);
+    }).catch(err => {
+      console.error('[WS] Failed to load initial symbols', err);
+    });
     
     // Broadcast flush interval
     setInterval(() => {
