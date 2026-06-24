@@ -6,19 +6,40 @@ import { Activity, ShieldAlert, DollarSign, TrendingUp, History, List, XCircle, 
 export default function TradingDashboard({ mode }: { mode: 'paper' | 'demo' | 'live' }) {
   const [loading, setLoading] = useState(true);
 
-  // Stats mock data for now
-  const stats = {
-    equity: '$10,245.50',
-    openPositions: 2,
-    closedTrades: 15,
-    winRate: '68%',
-    realizedPnl: '+$245.50',
-    unrealizedPnl: '-$12.30'
-  };
+  const [stats, setStats] = useState({
+    equity: '$0.00', openPositions: 0, closedTrades: 0,
+    winRate: '0%', realizedPnl: '+$0.00', unrealizedPnl: '$0.00',
+  });
+  const [positions, setPositions] = useState<any[]>([]);
+  const [logs, setLogs] = useState<any[]>([]);
 
   useEffect(() => {
-    // In the future, fetch stats from /api/trading/stats?mode=...
-    setLoading(false);
+    const load = async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(`/api/trading/stats?mode=${mode}`);
+        const json = await res.json();
+        if (json.success) {
+          const d = json.data;
+          const fmt = (n: number) => (n >= 0 ? '+' : '-') + '$' + Math.abs(n).toFixed(2);
+          setStats({
+            equity: `$${Number(d.equity).toFixed(2)}`,
+            openPositions: d.openPositions,
+            closedTrades: d.closedTrades,
+            winRate: d.winRate,
+            realizedPnl: fmt(d.realizedPnl),
+            unrealizedPnl: fmt(d.unrealizedPnl),
+          });
+          setPositions(d.positions || []);
+          setLogs(d.logs || []);
+        }
+      } catch (e) {
+        console.error('Failed to fetch trading stats', e);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
   }, [mode]);
 
   return (
@@ -114,11 +135,24 @@ export default function TradingDashboard({ mode }: { mode: 'paper' | 'demo' | 'l
                   <button className="filter-tab">In Loss</button>
                 </div>
               </div>
-              <div style={{ background: 'var(--bg-deep)', borderRadius: 'var(--radius-md)', padding: '3rem 2rem', textAlign: 'center', border: '1px dashed var(--border)' }}>
-                <div style={{ color: 'var(--text-muted)', marginBottom: '1rem' }}><Activity size={40} opacity={0.5} style={{ margin: '0 auto' }} /></div>
-                <div style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>No open positions found.</div>
-                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>Execute an arbitrage trade to see it here.</div>
-              </div>
+              {positions.length === 0 ? (
+                <div style={{ background: 'var(--bg-deep)', borderRadius: 'var(--radius-md)', padding: '3rem 2rem', textAlign: 'center', border: '1px dashed var(--border)' }}>
+                  <div style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>No open positions found.</div>
+                  <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>Execute an arbitrage trade to see it here.</div>
+                </div>
+              ) : (
+                <div>
+                  {positions.map((pos: any) => (
+                    <div key={pos.id} style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border)', display: 'flex', justifyContent: 'space-between', fontSize: '0.88rem' }}>
+                      <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{pos.symbol}</span>
+                      <span style={{ color: 'var(--text-secondary)' }}>{pos.exchange} · {pos.side}</span>
+                      <span style={{ color: (pos.unrealized_pnl || 0) >= 0 ? 'var(--positive)' : 'var(--negative)', fontWeight: 600 }}>
+                        {(pos.unrealized_pnl || 0) >= 0 ? '+' : ''}${Number(pos.unrealized_pnl || 0).toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* Trade History */}
@@ -144,22 +178,23 @@ export default function TradingDashboard({ mode }: { mode: 'paper' | 'demo' | 'l
                 border: '1px solid var(--border)', fontFamily: '"JetBrains Mono", monospace', fontSize: '0.8rem',
                 overflowY: 'auto'
               }}>
-                <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', paddingBottom: '0.75rem', borderBottom: '1px solid var(--border)' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>[10:24:32]</span>
-                  <span style={{ color: 'var(--text-secondary)' }}>Engine started in <strong style={{color: 'var(--text-primary)'}}>{mode.toUpperCase()}</strong> mode.</span>
-                </div>
-                <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', paddingBottom: '0.75rem', borderBottom: '1px solid var(--border)' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>[10:24:33]</span>
-                  <span style={{ color: 'var(--text-secondary)' }}>Connecting to exchange APIs...</span>
-                </div>
-                <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.75rem', paddingBottom: '0.75rem', borderBottom: '1px solid var(--border)' }}>
-                  <span style={{ color: 'var(--text-muted)' }}>[10:24:35]</span>
-                  <span style={{ color: 'var(--positive)' }}>Connections established successfully.</span>
-                </div>
-                <div style={{ display: 'flex', gap: '0.75rem' }}>
-                  <span style={{ color: 'var(--accent-blue)' }}>&gt;</span>
-                  <span style={{ color: 'var(--text-muted)' }} className="animate-pulse">Waiting for execution...</span>
-                </div>
+                {logs.length === 0 ? (
+                  <div style={{ display: 'flex', gap: '0.75rem' }}>
+                    <span style={{ color: 'var(--accent-blue)' }}>&gt;</span>
+                    <span style={{ color: 'var(--text-muted)' }}>Waiting for execution...</span>
+                  </div>
+                ) : (
+                  logs.map((log: any) => (
+                    <div key={log.id} style={{ display: 'flex', gap: '0.75rem', marginBottom: '0.5rem' }}>
+                      <span style={{ color: 'var(--text-muted)', flexShrink: 0 }}>
+                        [{new Date(log.created_at).toLocaleTimeString()}]
+                      </span>
+                      <span style={{
+                        color: log.log_level === 'ERROR' ? 'var(--negative)' : log.log_level === 'WARN' ? '#F7A600' : 'var(--text-secondary)'
+                      }}>{log.message}</span>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>

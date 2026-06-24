@@ -23,7 +23,7 @@ import type { FundingRateEntry } from '@/app/api/cron/scanner/route';
 import { ALL_EXCHANGES_CONFIG } from '@/lib/exchanges';
 import ProfitSimulatorModal from './ProfitSimulatorModal';
 import { useDebouncedPrices } from '@/hooks/useDebouncedPrices';
-import { usePriceStream } from '@/hooks/usePriceStream';
+
 import { usePriceStore } from '@/store/prices';
 import { TAKER_FEES } from '@/lib/constants';
 import { calculateSlippage } from '@/lib/slippage';
@@ -178,7 +178,7 @@ function computeSpread(
       })
       .filter((p): p is number => p != null && p > 0 && !isNaN(p) && isFinite(p));
 
-    if (pricesForExchanges.length < 2) return 0;
+    if (pricesForExchanges.length < 2) return row.maxSpread ?? 0;
     
     const maxPrice = Math.max(...pricesForExchanges);
     const minPrice = Math.min(...pricesForExchanges);
@@ -186,7 +186,7 @@ function computeSpread(
     
     return parseFloat(spread.toFixed(8));
   } catch {
-    return 0;
+    return row.maxSpread ?? 0;
   }
 }
 
@@ -212,7 +212,7 @@ export default function FundingRateTable({
   data, onRefresh, isRefreshing, updatedAt, exchangeStatus, onEnrichedDataChange, positionSize
 }: Props) {
   // Initialize SSE connection globally, but we don't subscribe to its state here
-  const { isConnected: isLiveConnected } = usePriceStream();
+  const isLiveConnected = usePriceStore(state => state.isConnected);
   // Read debounced prices for top-level sorting
   const debouncedPricesMap = useDebouncedPrices(1000);
   const livePrices = useMemo(() => Object.values(debouncedPricesMap), [debouncedPricesMap]);
@@ -230,7 +230,6 @@ export default function FundingRateTable({
   const prevDeps = useRef({ data, activeExchangeKeys: null as any, livePrices, positionSize, onEnrichedDataChange });
 
   useEffect(() => {
-    console.log('[DEBUG] FundingRateTable rendered. data changed?', prevDeps.current.data !== data, 'livePrices changed?', prevDeps.current.livePrices !== livePrices);
     prevDeps.current = { data, activeExchangeKeys: null, livePrices, positionSize, onEnrichedDataChange };
   });
 

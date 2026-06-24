@@ -4,11 +4,11 @@ import { useState, useEffect } from 'react';
 import { Shield, Key, CheckCircle, XCircle, Loader2, Trash2, Eye, EyeOff, Zap } from 'lucide-react';
 
 const BASE_EXCHANGES = [
-  { id: 'binance',     baseName: 'Binance',      color: '#F0B90B' },
-  { id: 'bybit',       baseName: 'Bybit',        color: '#F7A600' },
-  { id: 'okx',         baseName: 'OKX',          color: '#FFFFFF' },
-  { id: 'bitget',      baseName: 'Bitget',       color: '#00CDD7' },
-  { id: 'delta',       baseName: 'Delta',        color: '#6A2A82' },
+  { id: 'binance', baseName: 'Binance', color: '#F0B90B', demoSupported: false },
+  { id: 'bybit',   baseName: 'Bybit',   color: '#F7A600', demoSupported: true  },
+  { id: 'okx',     baseName: 'OKX',     color: '#FFFFFF', demoSupported: false },
+  { id: 'bitget',  baseName: 'Bitget',  color: '#00CDD7', demoSupported: false },
+  { id: 'delta',   baseName: 'Delta',   color: '#6A2A82', demoSupported: false },
 ];
 
 type ExchangeKey = {
@@ -182,9 +182,12 @@ export default function ApiSettingsForm({ mode }: { mode: 'demo' | 'live' }) {
             <Loader2 size={32} style={{ animation: 'spin 1s linear infinite' }} />
           </div>
         ) : (
+          <>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             {BASE_EXCHANGES.map(ex => {
-              const name = mode === 'demo' ? (ex.id === 'binance' ? 'Binance Testnet' : `${ex.baseName} Demo`) : ex.baseName;
+              // In demo mode, only show exchanges that have a real demo environment
+              if (mode === 'demo' && !ex.demoSupported) return null;
+              const name = mode === 'demo' ? `${ex.baseName} Demo (api-demo.bybit.com)` : ex.baseName;
               const saved = getSavedKey(ex.id);
               const form = getForm(ex.id);
               return (
@@ -340,6 +343,20 @@ export default function ApiSettingsForm({ mode }: { mode: 'demo' | 'live' }) {
               );
             })}
           </div>
+          {mode === 'demo' && (
+            <div style={{
+              marginTop: '1.5rem', padding: '1rem 1.25rem',
+              background: 'rgba(247,166,0,0.08)',
+              border: '1px solid rgba(247,166,0,0.3)',
+              borderRadius: 10, color: 'var(--text-secondary)', fontSize: '0.85rem', lineHeight: 1.7
+            }}>
+              <strong style={{ color: '#F7A600' }}>ℹ️ About Demo Trading:</strong><br />
+              Only <strong>Bybit Demo</strong> is supported. It uses real market prices with virtual money.<br />
+              Create a demo account at <strong>bybit.com → Demo Trading</strong> and generate API keys there.<br />
+              Do NOT use Bybit Testnet keys — those have fake prices. Use Bybit Demo account keys only.
+            </div>
+          )}
+          </>
         )}
       </div>
     </div>

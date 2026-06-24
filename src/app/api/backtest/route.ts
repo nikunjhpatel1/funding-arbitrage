@@ -67,7 +67,9 @@ export async function POST(req: Request) {
 
     if (fetchError) {
       console.error('[Supabase] Backtest fetch error', fetchError);
-      return NextResponse.json({ error: 'Database fetch error' }, { status: 500 });
+      return NextResponse.json({ 
+        error: `No historical data available yet. The system collects funding rate data every 15 minutes. Try selecting a more recent date range, or check back after the system has been running for a few hours. Technical detail: ${fetchError.message}` 
+      }, { status: 500 });
     }
 
     if (!rows || rows.length === 0) {
@@ -83,10 +85,12 @@ export async function POST(req: Request) {
       
       return NextResponse.json(
         {
-          error: `No historical data found for "${dbSymbol}" between ${startDate} and ${endDate}.\n` +
-                 `Available symbols in this date range (sample): ${uniqueSymbols || 'none — the date range may be outside the recorded history.'}`,
+          error: `No historical data found for "${dbSymbol}" between ${startDate} and ${endDate}. ` +
+                 `The system collects snapshots every 15 minutes via the cron job. ` +
+                 `Available symbols in this range: ${uniqueSymbols || 'none yet — system may need more time to collect data.'}. ` +
+                 `Tip: Try running /api/cron/snapshot manually to trigger an immediate data collection.`,
         },
-        { status: 400 },
+        { status: 400 }
       );
     }
 

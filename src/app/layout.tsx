@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import Navbar from '@/components/Navbar';
 import Footer from '@/components/Footer';
+import PriceStreamProvider from '@/components/PriceStreamProvider';
 
 export const metadata: Metadata = {
   title: 'FundingArb – Crypto Funding Rate Arbitrage Platform',
@@ -29,7 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
         <div className="page-wrapper content-layer">
           <Navbar />
-          <main className="main-content">{children}</main>
+          <main className="main-content"><PriceStreamProvider>{children}</PriceStreamProvider></main>
           <Footer />
         </div>
       </body>

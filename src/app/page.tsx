@@ -57,9 +57,7 @@ export default function HomePage() {
   const [mounted, setMounted] = useState(false);
   const [positionSize, setPositionSize] = useState<number>(1000);
 
-  useEffect(() => {
-    console.log('[DEBUG] page.tsx rendered. enrichedData.length:', enrichedData.length);
-  });
+
 
   const [isCustomPositionSize, setIsCustomPositionSize] = useState(false);
 

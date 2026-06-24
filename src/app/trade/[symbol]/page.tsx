@@ -14,7 +14,7 @@ import {
   BarChart2
 } from 'lucide-react';
 import type { FundingRateEntry } from '@/app/api/cron/scanner/route';
-import { usePriceStream } from '@/hooks/usePriceStream';
+
 import { usePriceStore } from '@/store/prices';
 
 const EXCHANGE_URLS: Record<string, (sym: string) => string> = {
@@ -77,7 +77,7 @@ export default function TradePage() {
   const [shortExchange, setShortExchange] = useState<string>('');
   const [showExecuteModal, setShowExecuteModal] = useState(false);
 
-  usePriceStream(); // Ensure the SSE connection is active on this page too
+
 
   const cleanSymbol = baseAsset + 'USDT';
   const liveLongPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${longExchange}`]?.markPrice);
@@ -87,7 +87,7 @@ export default function TradePage() {
 
   useEffect(() => {
     async function load() {
-      // 1. Try local storage first
+      // 1. Show cached snapshot instantly so the page isn't blank while loading
       try {
         const cached = localStorage.getItem('tradeCoinData');
         if (cached) {
@@ -96,12 +96,12 @@ export default function TradePage() {
             setCoinData(parsed);
             setupExchanges(parsed);
             setLoading(false);
-            return;
           }
         }
       } catch { }
 
-      // 2. Fallback to API if not in local storage
+      // 2. Always fetch fresh data and overwrite the cached snapshot —
+      // the cache can be stale or missing fields the live API actually has.
       try {
         const res = await fetch('/api/funding-rates', { cache: 'no-store' });
         const json = await res.json();

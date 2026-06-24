@@ -3,7 +3,7 @@
 import { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Zap, AlertTriangle, CheckCircle, XCircle, Loader2, ArrowLeft } from 'lucide-react';
-import { usePriceStream } from '@/hooks/usePriceStream';
+
 import { usePriceStore } from '@/store/prices';
 
 function DemoTradingContent() {
@@ -24,7 +24,7 @@ function DemoTradingContent() {
   const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
-  usePriceStream(); // Ensure SSE connection is active
+
 
   const cleanSymbol = symbol.replace('/', '');
   const liveLongPrice = usePriceStore((state) => state.pricesMap[`${cleanSymbol}-${longExchange}`]?.markPrice);

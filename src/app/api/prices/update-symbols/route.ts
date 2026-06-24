@@ -11,7 +11,7 @@ export async function POST(req: Request) {
     // Cap at 150 symbols to avoid overwhelming exchange rate limits
     const cappedSymbols = symbols.slice(0, 150);
     
-    wsManager.updateSymbols(cappedSymbols);
+    wsManager.addSymbols(cappedSymbols);
     
     return NextResponse.json({ success: true, count: cappedSymbols.length });
   } catch (error: any) {

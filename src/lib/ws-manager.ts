@@ -25,24 +25,6 @@ export interface WsStatus {
   reconnectCount: number;
 }
 
-// Get symbols from environment or fallback
-const getSymbols = async (): Promise<string[]> => {
-  const envSymbols = process.env.STREAM_SYMBOLS;
-  if (envSymbols) {
-    return envSymbols.split(',').map(s => s.trim().toUpperCase());
-  }
-  try {
-    const { supabase } = await import('@/lib/supabase');
-    const { data, error } = await supabase.from('scanner_cache').select('payload').eq('id', 1).single();
-    if (!error && data?.payload?.data && Array.isArray(data.payload.data)) {
-      return data.payload.data.map((row: any) => row.symbol.replace('/', ''));
-    }
-  } catch (err) {
-    console.error('[WS] failed to load symbols from cache', err);
-  }
-  return ['BTCUSDT', 'ETHUSDT', 'SOLUSDT'];
-};
-
 abstract class ExchangeAdapter {
   protected ws: WebSocket | null = null;
   protected pingInterval: NodeJS.Timeout | null = null;
@@ -54,6 +36,11 @@ abstract class ExchangeAdapter {
   ) {}
 
   abstract connect(): void;
+
+  public resubscribe(): void {
+    // Default implementation if dynamic subscription isn't supported
+    this.triggerReconnect();
+  }
   
   protected disconnect() {
     if (this.pingInterval) clearInterval(this.pingInterval);
@@ -139,6 +126,20 @@ class BinanceAdapter extends ExchangeAdapter {
       this.ws.onerror = () => this.ws?.close();
     } catch (e) {
       this.triggerReconnect();
+    }
+  }
+
+  resubscribe() {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const streams = ['!markPrice@arr@1s'];
+      this.symbols.forEach(s => {
+        streams.push(`${s.toLowerCase()}@depth20@100ms`);
+      });
+      this.ws.send(JSON.stringify({
+        method: 'SUBSCRIBE',
+        params: streams,
+        id: Date.now()
+      }));
     }
   }
 }
@@ -425,6 +426,16 @@ class BybitAdapter extends ExchangeAdapter {
       };
     } catch (e) {
       this.triggerReconnect();
+    }
+  }
+
+  resubscribe() {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const args = this.symbols.flatMap(s => [
+        `tickers.${s}`,
+        `orderbook.50.${s}`,
+      ]);
+      this.ws.send(JSON.stringify({ op: 'subscribe', args }));
     }
   }
 }
@@ -1099,70 +1110,95 @@ class BlofinAdapter extends ExchangeAdapter {
     } catch (e) {
       this.triggerReconnect();
     }
+  }
+}
+
+
+
+class CoinSwitchAdapter extends ExchangeAdapter {
+  private socket: SocketV4 | null = null;
+  
+  connect() {
+    try {
+      this.socket = ioV4('wss://ws.coinswitch.co/exchange_2', {
+        path: '/pro/realtime-rates-socket/futures/exchange_2',
+        transports: ['websocket'],
+      });
+
+      this.socket.on('connect', () => {
+        console.log('[CoinSwitch] connected successfully');
+        console.log('[CoinSwitch] Connected, subscribing to', this.symbols.length, 'symbols');
+        this.updateStatus('Connected', 0);
+        this.symbols.forEach(s => {
+          this.socket?.emit('FETCH_TICKER_INFO_CS_PRO', { event: 'subscribe', pair: s });
+        });
+      });
+
+      this.socket.on('cs_pro_ticker_info', (msg: any) => {
+        console.log('[CoinSwitch] received data:', JSON.stringify(msg).slice(0, 200));
+      });
+
+      this.socket.on('FETCH_TICKER_INFO_CS_PRO', (payload: any) => {
+        try {
+          const dataArray = Array.isArray(payload) ? payload : [payload];
+          for (const entry of dataArray) {
+            for (const symbol of Object.keys(entry)) {
+              const msg = entry[symbol];
+              const updates: Partial<UnifiedPrice> = {};
+              if (msg.p != null) updates.markPrice = parseFloat(msg.p);
+              if (msg.r != null) updates.fundingRate = parseFloat(msg.r);
+              if (msg.b != null) updates.bid = parseFloat(msg.b);
+              if (msg.a != null) updates.ask = parseFloat(msg.a);
+              if (msg.T != null) updates.nextFunding = new Date(parseInt(msg.T)).toISOString();
+              if (Object.keys(updates).length > 0) {
+                this.updatePrice(symbol, updates, Date.now());
+              }
+            }
+          }
+        } catch (e) {
+          console.error('[CoinSwitch] Parse error:', e);
+        }
+      });
+
+      this.socket.on('disconnect', (reason: any) => {
+        console.log('[CoinSwitch] Disconnected:', reason);
+        this.triggerReconnect();
+      });
+      this.socket.on('connect_error', (err: any) => {
+        console.error('[CoinSwitch] Connection error:', err?.message || err);
+        this.socket?.disconnect();
+        this.triggerReconnect();
+      });
+    } catch (e) {
+      console.error('[CoinSwitch] connect() threw:', e);
+      this.triggerReconnect();
     }
   }
 
-  class CoinSwitchAdapter extends ExchangeAdapter {
-    private socket: SocketV4 | null = null;
-    
-    connect() {
-      try {
-        this.socket = ioV4('wss://ws.coinswitch.co/exchange_2', {
-          path: '/pro/realtime-rates-socket/futures/exchange_2',
-          transports: ['websocket'],
-        });
-  
-        this.socket.on('connect', () => {
-          this.updateStatus('Connected', 0);
-          console.log('[CoinSwitch] Connected! Subscribing to:', this.symbols);
-          this.symbols.forEach(s => {
-            this.socket?.emit('FETCH_TICKER_INFO_CS_PRO', { event: 'subscribe', pair: s });
-          });
-        });
-  
-        this.socket.on('cs_pro_ticker_info', (msg: any) => {
-          console.log('[CoinSwitch RAW]', msg);
-          try {
-            const updates: Partial<UnifiedPrice> = {};
-            if (msg.p) updates.markPrice = parseFloat(msg.p);
-            if (msg.r) updates.fundingRate = parseFloat(msg.r);
-            if (msg.c) {
-              updates.bid = parseFloat(msg.c);
-              updates.ask = parseFloat(msg.c);
-            }
-            if (msg.T) {
-               updates.nextFunding = new Date(parseInt(msg.T)).toISOString();
-            }
-            if (Object.keys(updates).length > 0 && msg.i) {
-              this.updatePrice(msg.i, updates, Date.now());
-            }
-          } catch (e) {}
-        });
-  
-        this.socket.on('disconnect', () => this.triggerReconnect());
-        this.socket.on('connect_error', () => {
-          this.socket?.disconnect();
-          this.triggerReconnect();
-        });
-      } catch (e) {
-        this.triggerReconnect();
-      }
-    }
-  
-    protected disconnect() {
-      super.disconnect();
-      if (this.socket) {
-        this.socket.disconnect();
-        this.socket = null;
-      }
+  protected disconnect() {
+    super.disconnect();
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
     }
   }
-  
-  export class WebSocketManager extends EventEmitter {
+
+  resubscribe() {
+    if (this.socket && this.socket.connected) {
+      this.symbols.forEach(s => {
+        this.socket?.emit('FETCH_TICKER_INFO_CS_PRO', { event: 'subscribe', pair: s });
+      });
+    }
+  }
+}
+
+export class WebSocketManager extends EventEmitter {
   private adapters: Map<ExchangeName, ExchangeAdapter> = new Map();
   private statuses: Map<ExchangeName, WsStatus> = new Map();
   private prices: Map<string, UnifiedPrice> = new Map(); // key: "EXCHANGE:SYMBOL"
   
+  private _symbols: Set<string>;
+
   // Buffers for delta streaming
   private deltaPrices: Map<string, UnifiedPrice> = new Map();
   private statusesChanged: boolean = false;
@@ -1171,31 +1207,29 @@ class BlofinAdapter extends ExchangeAdapter {
   constructor() {
     super();
     
-    // Create adapters with empty arrays initially
-    const initialSymbols: string[] = [];
+    const envSymbols = process.env.STREAM_SYMBOLS;
+    const initialSymbols = envSymbols 
+      ? envSymbols.split(',').map(s => s.trim().toUpperCase()).filter(Boolean)
+      : [];
+      
+    this._symbols = new Set(initialSymbols);
+    const initialArray = Array.from(this._symbols);
     
-    this.registerAdapter(new BinanceAdapter('binance', initialSymbols, this));
-    this.registerAdapter(new BitgetAdapter('bitget', initialSymbols, this));
-    this.registerAdapter(new DeltaAdapter('delta', initialSymbols, this));
-    this.registerAdapter(new OkxAdapter('okx', initialSymbols, this));
-    this.registerAdapter(new BybitAdapter('bybit', initialSymbols, this));
-    this.registerAdapter(new KucoinAdapter('kucoin', initialSymbols, this));
-    this.registerAdapter(new BingxAdapter('bingx', initialSymbols, this));
-    this.registerAdapter(new BitmexAdapter('bitmex', initialSymbols, this));
-    this.registerAdapter(new PhemexAdapter('phemex', initialSymbols, this));
-    this.registerAdapter(new GateioAdapter('gate', initialSymbols, this));
-    this.registerAdapter(new MexcAdapter('mexc', initialSymbols, this));
-    this.registerAdapter(new HtxAdapter('htx', initialSymbols, this));
-    this.registerAdapter(new HyperliquidAdapter('hyperliquid', initialSymbols, this));
-    this.registerAdapter(new BlofinAdapter('blofin', initialSymbols, this));
-    this.registerAdapter(new CoinSwitchAdapter('coinswitch', initialSymbols, this));
-    
-    // Load symbols asynchronously
-    getSymbols().then(symbols => {
-      this.updateSymbols(symbols);
-    }).catch(err => {
-      console.error('[WS] Failed to load initial symbols', err);
-    });
+    this.registerAdapter(new BinanceAdapter('binance', initialArray, this));
+    this.registerAdapter(new BitgetAdapter('bitget', initialArray, this));
+    this.registerAdapter(new DeltaAdapter('delta', initialArray, this));
+    this.registerAdapter(new OkxAdapter('okx', initialArray, this));
+    this.registerAdapter(new BybitAdapter('bybit', initialArray, this));
+    this.registerAdapter(new KucoinAdapter('kucoin', initialArray, this));
+    this.registerAdapter(new BingxAdapter('bingx', initialArray, this));
+    this.registerAdapter(new BitmexAdapter('bitmex', initialArray, this));
+    this.registerAdapter(new PhemexAdapter('phemex', initialArray, this));
+    this.registerAdapter(new GateioAdapter('gate', initialArray, this));
+    this.registerAdapter(new MexcAdapter('mexc', initialArray, this));
+    this.registerAdapter(new HtxAdapter('htx', initialArray, this));
+    this.registerAdapter(new HyperliquidAdapter('hyperliquid', initialArray, this));
+    this.registerAdapter(new BlofinAdapter('blofin', initialArray, this));
+    this.registerAdapter(new CoinSwitchAdapter('coinswitch', initialArray, this));
     
     // Broadcast flush interval
     setInterval(() => {
@@ -1291,41 +1325,53 @@ class BlofinAdapter extends ExchangeAdapter {
     }
   }
 
-  public updateSymbols(newSymbols: string[]) {
-    const uniqueSymbols = Array.from(new Set(newSymbols.map(s => s.toUpperCase())));
+  public getSymbols(): string[] {
+    return Array.from(this._symbols);
+  }
+
+  public addSymbols(symbols: string[]) {
+    let changed = false;
+    for (const s of symbols) {
+      const upper = s.trim().toUpperCase();
+      if (!this._symbols.has(upper)) {
+        this._symbols.add(upper);
+        changed = true;
+      }
+    }
     
-    let delay = 0;
-    for (const adapter of this.adapters.values()) {
-      const currentSet = new Set(adapter.symbols);
-      const newSet = new Set(uniqueSymbols);
-      
-      const isDifferent = currentSet.size !== newSet.size || 
-        [...currentSet].some(s => !newSet.has(s));
-      
-      if (isDifferent) {
-        (adapter as any).symbols = uniqueSymbols;
-        const adapterToReconnect = adapter;
+    if (changed) {
+      const currentArray = this.getSymbols();
+      let delay = 0;
+      for (const adapter of this.adapters.values()) {
+        adapter.symbols = currentArray;
         setTimeout(() => {
           try {
-            adapterToReconnect.connect();
+            adapter.resubscribe();
           } catch (e) {
-            console.error(`[WS] Failed to reconnect ${adapterToReconnect.name}:`, e);
+            console.error(`[WS] Failed to resubscribe ${adapter.name}:`, e);
           }
         }, delay);
-        delay += 300;
+        delay += 100;
       }
     }
   }
 }
 
-// Ensure singleton instance in Next.js development (prevents HMR from spawning multiple connections)
-const globalForWs = global as unknown as { wsManager: WebSocketManager };
+// Singleton — cleared on each HMR cycle so adapter code changes take effect immediately
+const globalForWs = global as unknown as { wsManager: WebSocketManager; wsManagerVersion: number };
 
-export const wsManager = globalForWs.wsManager || new WebSocketManager();
+const CURRENT_VERSION = 12; // increment this number whenever adapter code changes
 
-if (process.env.NODE_ENV !== 'production') {
-  globalForWs.wsManager = wsManager;
+if (!globalForWs.wsManager || globalForWs.wsManagerVersion !== CURRENT_VERSION) {
+  // Disconnect old instance cleanly if it exists
+  if (globalForWs.wsManager) {
+    try { (globalForWs.wsManager as any).adapters?.forEach((a: any) => a.disconnect?.()); } catch {}
+  }
+  globalForWs.wsManager = new WebSocketManager();
+  globalForWs.wsManagerVersion = CURRENT_VERSION;
 }
+
+export const wsManager = globalForWs.wsManager;
 
 // Initiate connections on first load if not already connected
 if (wsManager.getStatuses().every(s => s.status === 'Disconnected')) {

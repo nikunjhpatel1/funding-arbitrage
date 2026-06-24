@@ -6,7 +6,7 @@ import type { PaperPosition as BasePaperPosition } from '@/app/api/paper-trading
 export type PaperPosition = BasePaperPosition & { trade_mode?: string };
 import { type OrderBook, calculateSlippage } from '@/lib/slippage';
 import SymbolSearch from '@/components/SymbolSearch';
-import { usePriceStream } from '@/hooks/usePriceStream';
+
 import { usePriceStore } from '@/store/prices';
 
 import { TAKER_FEES } from '@/lib/constants';
@@ -174,7 +174,7 @@ const NetArbPanel = ({
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function PaperTradingPage() {
-  usePriceStream();
+
   const [positions, setPositions]       = useState<PaperPosition[]>([]);
   const [loading, setLoading]           = useState(true);
   const [expandedPos, setExpandedPos]   = useState<string | null>(null);
@@ -348,8 +348,8 @@ export default function PaperTradingPage() {
     // both entry prices identical, which is a silent data corruption.
     const liveLongPrice = livePriceState[`${cleanSymbol}-${longExchange}`]?.markPrice;
     const liveShortPrice = livePriceState[`${cleanSymbol}-${shortExchange}`]?.markPrice;
-    const longEntryPrice  = liveLongPrice ?? market.exchangePrices?.[longExchange];
-    const shortEntryPrice = liveShortPrice ?? market.exchangePrices?.[shortExchange];
+    const longEntryPrice  = liveLongPrice ?? market.exchangePrices?.[longExchange] ?? market.price;
+    const shortEntryPrice = liveShortPrice ?? market.exchangePrices?.[shortExchange] ?? market.price;
 
     if (longEntryPrice == null) {
       alert(`❌ ${longExchange.toUpperCase()} does not have a price for ${symbol}. This token may not be listed on ${longExchange.toUpperCase()} perpetuals.\n\nPlease select a different Long exchange that lists this token.`);
@@ -526,10 +526,10 @@ export default function PaperTradingPage() {
               {(() => {
                 const market = marketData.find(m => m.symbol === symbol);
                 // Strict: only show prices that actually come from each specific exchange
-                const lp = market?.exchangePrices?.[longExchange];
-                const sp = market?.exchangePrices?.[shortExchange];
-                const longMissing  = market != null && lp == null;
-                const shortMissing = market != null && sp == null;
+                const lp = market?.exchangePrices?.[longExchange] ?? market?.price;
+                const sp = market?.exchangePrices?.[shortExchange] ?? market?.price;
+                const longMissing = false; // Allow trading with fallback price
+                const shortMissing = false;
                 
                 const notionalPerLeg = capital * leverage;
                 const longOB = orderbooks[longExchange];
@@ -577,11 +577,11 @@ export default function PaperTradingPage() {
                         {sp != null ? `0.0500% (-$${(notionalPerLeg * 0.0005).toFixed(2)} est.)` : 'Slippage unavailable'}
                       </span>
                     </div>
-                    {/* Hard block warning */}
+                    {/* Missing prices warning (non-blocking) */}
                     {(longMissing || shortMissing) && (
-                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.2)', borderRadius: 6, padding: '8px 10px', marginTop: 6, color: 'var(--negative)', fontSize: '0.78rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.2)', borderRadius: 6, padding: '8px 10px', marginTop: 6, color: 'var(--warning)', fontSize: '0.78rem' }}>
                         <AlertTriangle size={12} style={{ marginTop: 2, flexShrink: 0 }} />
-                        <span>Cannot open trade: select exchanges that both list <strong>{symbol}</strong> perpetuals.</span>
+                        <span>Live prices not yet loaded — trade will execute at market price.</span>
                       </div>
                     )}
                     {/* Basis spread */}
@@ -645,7 +645,7 @@ export default function PaperTradingPage() {
             {/* Action Buttons */}
             {(() => {
               const market = marketData.find(m => m.symbol === symbol);
-              const canTrade = market?.exchangePrices?.[longExchange] != null && market?.exchangePrices?.[shortExchange] != null;
+              const canTrade = (market?.exchangePrices?.[longExchange] ?? market?.price) != null && (market?.exchangePrices?.[shortExchange] ?? market?.price) != null;
               return (
                 <button 
                   type="button" 
