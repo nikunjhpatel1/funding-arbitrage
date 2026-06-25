@@ -52,11 +52,11 @@ export async function GET(request: Request) {
 
   try {
     const { data: rows, error } = await supabase
-      .from('funding_history')
-      .select('timestamp, exchange, funding_rate, funding_interval')
+      .from('funding_rate_history')
+      .select('recorded_at, exchange, funding_rate, funding_interval_hours')
       .eq('symbol', normalizedSymbol)
-      .gte('timestamp', minTimestamp)
-      .order('timestamp', { ascending: true });
+      .gte('recorded_at', minTimestamp)
+      .order('recorded_at', { ascending: true });
 
     if (error) throw error;
     if (!rows) return NextResponse.json({ symbol, period, data: [], message: 'Data collection is starting.' });
@@ -64,8 +64,8 @@ export async function GET(request: Request) {
     // Group by timestamp
     const grouped = new Map<number, typeof rows>();
     for (const row of rows) {
-      if (!grouped.has(row.timestamp)) grouped.set(row.timestamp, []);
-      grouped.get(row.timestamp)!.push(row);
+      if (!grouped.has(row.recorded_at)) grouped.set(row.recorded_at, []);
+      grouped.get(row.recorded_at)!.push(row);
     }
 
     const data: HistoricalFundingItem[] = [];
@@ -80,7 +80,7 @@ export async function GET(request: Request) {
       for (const row of exchangeRows) {
         exchanges[row.exchange] = row.funding_rate;
         // Normalize to 8H equivalent for fair Best Long / Short comparison
-        const normRate = row.funding_rate * (8 / (row.funding_interval || 8));
+        const normRate = row.funding_rate * (8 / (row.funding_interval_hours || 8));
         
         if (normRate < minNorm) {
           minNorm = normRate;
@@ -95,8 +95,8 @@ export async function GET(request: Request) {
       // Calculate spread based on normalized rates
       const longRateRaw = exchanges[bestLong] || 0;
       const shortRateRaw = exchanges[bestShort] || 0;
-      const longNorm = longRateRaw * (8 / (exchangeRows.find(r => r.exchange === bestLong)?.funding_interval || 8));
-      const shortNorm = shortRateRaw * (8 / (exchangeRows.find(r => r.exchange === bestShort)?.funding_interval || 8));
+      const longNorm = longRateRaw * (8 / (exchangeRows.find(r => r.exchange === bestLong)?.funding_interval_hours || 8));
+      const shortNorm = shortRateRaw * (8 / (exchangeRows.find(r => r.exchange === bestShort)?.funding_interval_hours || 8));
       const spread = shortNorm - longNorm;
 
       data.push({

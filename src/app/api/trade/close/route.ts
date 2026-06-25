@@ -3,54 +3,43 @@ import { supabase } from '@/lib/supabase';
 import { decrypt } from '@/lib/encryption';
 import { USDMClient } from 'binance';
 import { RestClientV5 } from 'bybit-api';
+import crypto from 'crypto';
 
 async function logExecution(level: string, message: string, positionId?: string | null) {
   try {
-    await supabase.from('execution_logs').insert({
+    await supabase.from('live_execution_logs').insert({
+      id: crypto.randomUUID(),
       position_id: positionId || null,
       log_level: level,
-      message: message
+      message: message,
+      created_at: Date.now(),
     });
   } catch (e) {
-    console.error("Failed to write to execution_logs:", e);
+    console.error("Failed to write to live_execution_logs:", e);
   }
 }
 
 async function getBinanceKeys(): Promise<{ apiKey: string; secret: string }> {
-  const isTestnet = process.env.BINANCE_TESTNET === 'true';
-  if (isTestnet) {
-    const apiKey = process.env.BINANCE_TESTNET_API_KEY;
-    const secret = process.env.BINANCE_TESTNET_SECRET;
-    if (!apiKey || !secret) throw new Error('BINANCE_TESTNET_API_KEY / BINANCE_TESTNET_SECRET not set in env');
-    return { apiKey, secret };
-  }
   const { data, error } = await supabase
-    .from('exchange_api_keys')
+    .from('live_exchange_api_keys')
     .select('api_key_encrypted, secret_encrypted')
     .eq('exchange', 'binance')
     .eq('is_active', true)
     .limit(1)
     .single();
-  if (error || !data) throw new Error('No API keys found for binance');
+  if (error || !data) throw new Error('No live API keys found for Binance. Add them in Settings → Live APIs.');
   return { apiKey: decrypt(data.api_key_encrypted), secret: decrypt(data.secret_encrypted) };
 }
 
 async function getBybitKeys(): Promise<{ apiKey: string; secret: string }> {
-  const isTestnet = process.env.BYBIT_TESTNET === 'true';
-  if (isTestnet) {
-    const apiKey = process.env.BYBIT_API_KEY;
-    const secret = process.env.BYBIT_SECRET;
-    if (!apiKey || !secret) throw new Error('BYBIT_API_KEY / BYBIT_SECRET not set in env');
-    return { apiKey, secret };
-  }
   const { data, error } = await supabase
-    .from('exchange_api_keys')
+    .from('live_exchange_api_keys')
     .select('api_key_encrypted, secret_encrypted')
     .eq('exchange', 'bybit')
     .eq('is_active', true)
     .limit(1)
     .single();
-  if (error || !data) throw new Error('No API keys found for bybit');
+  if (error || !data) throw new Error('No live API keys found for Bybit. Add them in Settings → Live APIs.');
   return { apiKey: decrypt(data.api_key_encrypted), secret: decrypt(data.secret_encrypted) };
 }
 
@@ -82,7 +71,7 @@ export async function POST(req: Request) {
     if (!positionId) return NextResponse.json({ error: 'Missing positionId' }, { status: 400 });
 
     const { data: position, error: posError } = await supabase
-      .from('real_positions')
+      .from('live_positions')
       .select('*')
       .eq('id', positionId)
       .single();
@@ -137,24 +126,32 @@ export async function POST(req: Request) {
     }
 
     // Update Status
-    await supabase.from('real_positions').update({ status: 'CLOSED', closed_at: new Date().toISOString() }).eq('id', positionId);
+    await supabase.from('live_positions').update({ status: 'CLOSED', closed_at: Date.now() }).eq('id', positionId);
     
     // Log history
     try {
-      await supabase.from('real_trade_history').insert([
+      await supabase.from('live_trade_history').insert([
         {
+          id: crypto.randomUUID(),
           position_id: positionId,
-          event_type: 'EXIT_LONG',
           exchange: longExchange,
-          order_id: results.longClose?.orderId?.toString() || results.longClose?.result?.orderId?.toString() || null,
-          quantity: qty
+          symbol: symbol,
+          side: 'Sell',
+          quantity: qty,
+          price: 0,
+          event_type: 'EXIT_LONG',
+          created_at: Date.now(),
         },
         {
+          id: crypto.randomUUID(),
           position_id: positionId,
-          event_type: 'EXIT_SHORT',
           exchange: shortExchange,
-          order_id: results.shortClose?.orderId?.toString() || results.shortClose?.result?.orderId?.toString() || null,
-          quantity: qty
+          symbol: symbol,
+          side: 'Buy',
+          quantity: qty,
+          price: 0,
+          event_type: 'EXIT_SHORT',
+          created_at: Date.now(),
         }
       ]);
     } catch (e) {

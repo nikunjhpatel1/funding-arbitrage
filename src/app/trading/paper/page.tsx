@@ -645,24 +645,68 @@ export default function PaperTradingPage() {
             {/* Action Buttons */}
             {(() => {
               const market = marketData.find(m => m.symbol === symbol);
-              const canTrade = (market?.exchangePrices?.[longExchange] ?? market?.price) != null && (market?.exchangePrices?.[shortExchange] ?? market?.price) != null;
+              const longPriceAvail = 
+                (market?.exchangePrices?.[longExchange] ?? market?.price) != null;
+              const shortPriceAvail = 
+                (market?.exchangePrices?.[shortExchange] ?? market?.price) != null;
+              const hasFundingData = 
+                typeof market?.[longExchange] === 'number' && 
+                typeof market?.[shortExchange] === 'number';
+              // Allow trade if funding data exists, even if live price not yet loaded
+              const canTrade = hasFundingData;
+              const priceWarning = !longPriceAvail || !shortPriceAvail;
+
               return (
-                <button 
-                  type="button" 
-                  disabled={!canTrade || isExecuting} 
-                  onClick={(e) => executePosition()}
-                  style={{ 
-                    width: '100%',
-                    background: canTrade ? 'var(--accent-blue)' : 'rgba(100,100,100,0.3)', 
-                    color: canTrade ? '#fff' : 'var(--text-muted)', 
-                    border: 'none', padding: '12px', borderRadius: 8, fontWeight: 700, 
-                    cursor: canTrade ? 'pointer' : 'not-allowed', 
-                    transition: 'all 0.2s',
-                    marginTop: 4
-                  }}
-                >
-                  {isExecuting ? 'Executing...' : 'Execute Paper Trade'}
-                </button>
+                <>
+                  {priceWarning && (
+                    <div style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 6,
+                      background: 'rgba(234,179,8,0.08)',
+                      border: '1px solid rgba(234,179,8,0.25)',
+                      borderRadius: 8, padding: '8px 12px', marginBottom: 8,
+                      color: 'var(--warning)', fontSize: '0.78rem'
+                    }}>
+                      <AlertTriangle size={13} style={{ marginTop: 2, flexShrink: 0 }} />
+                      <span>
+                        Live prices still loading — trade will execute at 
+                        market price on the exchange. This is normal on first load.
+                      </span>
+                    </div>
+                  )}
+                  {!hasFundingData && (
+                    <div style={{
+                      display: 'flex', alignItems: 'flex-start', gap: 6,
+                      background: 'rgba(244,63,94,0.08)',
+                      border: '1px solid rgba(244,63,94,0.25)',
+                      borderRadius: 8, padding: '8px 12px', marginBottom: 8,
+                      color: 'var(--negative)', fontSize: '0.78rem'
+                    }}>
+                      <AlertTriangle size={13} style={{ marginTop: 2, flexShrink: 0 }} />
+                      <span>
+                        No funding data for {symbol} on these exchanges. 
+                        Select exchanges that list this pair.
+                      </span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    disabled={!canTrade || isExecuting}
+                    onClick={() => executePosition()}
+                    style={{
+                      width: '100%',
+                      background: canTrade 
+                        ? 'var(--accent-blue)' 
+                        : 'rgba(100,100,100,0.3)',
+                      color: canTrade ? '#fff' : 'var(--text-muted)',
+                      border: 'none', padding: '12px', borderRadius: 8,
+                      fontWeight: 700,
+                      cursor: canTrade ? 'pointer' : 'not-allowed',
+                      transition: 'all 0.2s', marginTop: 4
+                    }}
+                  >
+                    {isExecuting ? 'Executing...' : 'Execute Paper Trade'}
+                  </button>
+                </>
               );
             })()}
           </form>

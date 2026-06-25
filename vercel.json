@@ -2,10 +2,16 @@
   "functions": {
     "src/app/api/funding-rates/route.ts": {
       "maxDuration": 60
+    },
+    "src/app/api/cron/scanner/route.ts": {
+      "maxDuration": 60
+    },
+    "src/app/api/backtest/route.ts": {
+      "maxDuration": 60
     }
   },
   "crons": [{
-    "path": "/api/cron/snapshot",
+    "path": "/api/cron/scanner",
     "schedule": "*/15 * * * *"
   }]
 }

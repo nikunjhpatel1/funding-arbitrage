@@ -15,7 +15,7 @@ export default function PositionsPage() {
   async function fetchPositions() {
     setLoading(true);
     const { data, error } = await supabase
-      .from('real_positions')
+      .from('live_positions')
       .select('*')
       .order('opened_at', { ascending: false });
       

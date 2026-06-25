@@ -21,7 +21,7 @@ function fmtLarge(n: number) {
 export default function StatsGrid({ data }: Props) {
   const hotCount = data.filter((d) => d.computedOpportunity === 'hot').length;
   const avgSpread = data.reduce((s, d) => s + d.computedSpread, 0) / (data.length || 1);
-  const totalVol = data.reduce((s, d) => s + d.volume24h, 0);
+  const totalVol = data.reduce((s, d) => s + (Number(d.volume24h) || 0), 0);
   const maxOpp = data.reduce((best, d) => (d.computedSpread > best.computedSpread ? d : best), data[0]);
 
   return (

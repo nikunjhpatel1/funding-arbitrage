@@ -1,8 +1,24 @@
 import { supabase } from './supabase';
 import { decrypt } from './encryption';
-import { USDMClient } from 'binance';
 import { RestClientV5 } from 'bybit-api';
 import { TradingMode } from './trading-mode';
+
+async function bybitDemoGet(apiKey: string, secret: string, path: string): Promise<any> {
+  const timestamp = Date.now();
+  const recvWindow = 5000;
+  const payload = '';
+  const signStr = `${timestamp}${apiKey}${recvWindow}${payload}`;
+  const sign = (await import('crypto')).createHmac('sha256', secret).update(signStr).digest('hex');
+  const res = await fetch(`https://api-demo.bybit.com${path}`, {
+    headers: {
+      'X-BAPI-API-KEY': apiKey,
+      'X-BAPI-TIMESTAMP': String(timestamp),
+      'X-BAPI-SIGN': sign,
+      'X-BAPI-RECV-WINDOW': String(recvWindow),
+    },
+  });
+  return res.json();
+}
 
 export class PositionSync {
   
@@ -54,57 +70,82 @@ export class PositionSync {
 
       try {
         if (key.exchange === 'binance') {
-          const client = new USDMClient({
-            api_key: apiKey,
-            api_secret: secret,
-            ...(mode === TradingMode.DEMO ? { baseUrl: 'https://testnet.binancefuture.com' } : {}),
-          });
-          
-          const accInfo = await client.getAccountInformation();
-          const activePos = accInfo.positions.filter(p => parseFloat(String(p.positionAmt)) !== 0);
+          if (mode === TradingMode.DEMO) {
+            console.warn('[PositionSync] Binance has no demo environment — skipping demo sync for Binance.');
+            continue;
+          }
+          // Live Binance: raw fetch + HMAC
+          const crypto = await import('crypto');
+          const ts = Date.now();
+          const recvWindow = 5000;
+          const query = `timestamp=${ts}&recvWindow=${recvWindow}`;
+          const sig = crypto.createHmac('sha256', secret).update(query).digest('hex');
+          const res = await fetch(
+            `https://fapi.binance.com/fapi/v2/account?${query}&signature=${sig}`,
+            { headers: { 'X-MBX-APIKEY': apiKey } }
+          );
+          const accInfo = await res.json();
+          if (!accInfo.positions) continue;
+          const activePos = accInfo.positions.filter((p: any) => parseFloat(String(p.positionAmt)) !== 0);
 
           for (const dbPos of exchangePositions) {
             const sym = dbPos.symbol.replace('/', '');
-            const remotePos = activePos.find(p => p.symbol === sym);
-            
+            const remotePos = activePos.find((p: any) => p.symbol === sym);
             if (remotePos) {
               await supabase.from(positionTableName).update({
                 unrealized_pnl: parseFloat(String(remotePos.unrealizedProfit)),
-                current_price: parseFloat(String(remotePos.entryPrice)), // or Mark price
+                current_price: parseFloat(String(remotePos.entryPrice)),
               }).eq('id', dbPos.id);
             } else {
-              // Position closed on exchange directly
               await supabase.from(positionTableName).update({
                 status: 'CLOSED',
-                closed_at: Date.now()
+                closed_at: Date.now(),
               }).eq('id', dbPos.id);
             }
           }
 
         } else if (key.exchange === 'bybit') {
-          const client = new RestClientV5({
-            key: apiKey,
-            secret,
-            testnet: mode === TradingMode.DEMO,
-          });
+          if (mode === TradingMode.DEMO) {
+            // Bybit demo — use api-demo.bybit.com via raw fetch
+            const posData = await bybitDemoGet(apiKey, secret, '/v5/position/list?category=linear&settleCoin=USDT');
+            if (posData.retCode !== 0) continue;
+            const activePos = (posData.result?.list || []).filter((p: any) => parseFloat(p.size) > 0);
 
-          const posInfo = await client.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
-          const activePos = posInfo.result.list.filter(p => parseFloat(p.size) > 0);
+            for (const dbPos of exchangePositions) {
+              const sym = dbPos.symbol.replace('/', '');
+              const remotePos = activePos.find((p: any) => p.symbol === sym);
+              if (remotePos) {
+                await supabase.from(positionTableName).update({
+                  unrealized_pnl: parseFloat(String(remotePos.unrealisedPnl)),
+                  current_price: parseFloat(String(remotePos.markPrice)),
+                }).eq('id', dbPos.id);
+              } else {
+                await supabase.from(positionTableName).update({
+                  status: 'CLOSED',
+                  closed_at: Date.now(),
+                }).eq('id', dbPos.id);
+              }
+            }
+          } else {
+            // Bybit live — use RestClientV5 (no testnet flag)
+            const client = new RestClientV5({ key: apiKey, secret });
+            const posInfo = await client.getPositionInfo({ category: 'linear', settleCoin: 'USDT' });
+            const activePos = posInfo.result.list.filter(p => parseFloat(p.size) > 0);
 
-          for (const dbPos of exchangePositions) {
-            const sym = dbPos.symbol.replace('/', '');
-            const remotePos = activePos.find(p => p.symbol === sym);
-
-            if (remotePos) {
-              await supabase.from(positionTableName).update({
-                unrealized_pnl: parseFloat(String(remotePos.unrealisedPnl)),
-                current_price: parseFloat(String(remotePos.markPrice)),
-              }).eq('id', dbPos.id);
-            } else {
-              await supabase.from(positionTableName).update({
-                status: 'CLOSED',
-                closed_at: Date.now()
-              }).eq('id', dbPos.id);
+            for (const dbPos of exchangePositions) {
+              const sym = dbPos.symbol.replace('/', '');
+              const remotePos = activePos.find(p => p.symbol === sym);
+              if (remotePos) {
+                await supabase.from(positionTableName).update({
+                  unrealized_pnl: parseFloat(String(remotePos.unrealisedPnl)),
+                  current_price: parseFloat(String(remotePos.markPrice)),
+                }).eq('id', dbPos.id);
+              } else {
+                await supabase.from(positionTableName).update({
+                  status: 'CLOSED',
+                  closed_at: Date.now(),
+                }).eq('id', dbPos.id);
+              }
             }
           }
         }

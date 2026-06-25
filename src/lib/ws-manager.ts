@@ -1126,7 +1126,6 @@ class CoinSwitchAdapter extends ExchangeAdapter {
       });
 
       this.socket.on('connect', () => {
-        console.log('[CoinSwitch] connected successfully');
         console.log('[CoinSwitch] Connected, subscribing to', this.symbols.length, 'symbols');
         this.updateStatus('Connected', 0);
         this.symbols.forEach(s => {
@@ -1134,9 +1133,6 @@ class CoinSwitchAdapter extends ExchangeAdapter {
         });
       });
 
-      this.socket.on('cs_pro_ticker_info', (msg: any) => {
-        console.log('[CoinSwitch] received data:', JSON.stringify(msg).slice(0, 200));
-      });
 
       this.socket.on('FETCH_TICKER_INFO_CS_PRO', (payload: any) => {
         try {

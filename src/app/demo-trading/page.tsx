@@ -149,7 +149,7 @@ function DemoTradingContent() {
         }}>
           <AlertTriangle size={18} color="#22c55e" style={{ flexShrink: 0, marginTop: 2 }} />
           <p style={{ margin: 0, fontSize: '0.85rem', color: '#22c55e', lineHeight: 1.5, fontWeight: 600 }}>
-            Testnet Only, No Real Money. This execution only interacts with Binance Testnet and Bybit Testnet APIs.
+            Testnet Only, No Real Money. This execution only interacts with Bybit Testnet and OKX/KuCoin Testnet APIs.
           </p>
         </div>
 

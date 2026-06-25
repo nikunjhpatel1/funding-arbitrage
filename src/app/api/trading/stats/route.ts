@@ -6,6 +6,23 @@ export const dynamic = 'force-dynamic';
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const mode = searchParams.get('mode') || 'demo';
+  if (mode === 'paper') {
+    // Paper trading uses its own separate paper_positions table
+    // Return empty stats — paper trading has its own page/API
+    return NextResponse.json({
+      success: true,
+      data: {
+        equity: 10000,
+        openPositions: 0,
+        closedTrades: 0,
+        winRate: '0.0%',
+        realizedPnl: 0,
+        unrealizedPnl: 0,
+        positions: [],
+        logs: [],
+      }
+    });
+  }
   const prefix = mode === 'live' ? 'live' : 'demo';
 
   try {

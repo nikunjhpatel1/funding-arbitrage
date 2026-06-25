@@ -31,25 +31,54 @@ export default function PriceStreamProvider({ children }: { children: React.Reac
 
     connect();
 
-    if (!symbolsRegistered.current) {
-      symbolsRegistered.current = true;
+    let retryCount = 0;
+    const maxRetries = 5;
+    const retryDelays = [2000, 5000, 10000, 20000, 30000];
+
+    const registerSymbols = () => {
+      if (symbolsRegistered.current) return;
       fetch('/api/funding-rates')
         .then(r => r.json())
         .then(json => {
           const rows: any[] = json?.data || [];
           if (rows.length > 0) {
             const symbols = Array.from(
-              new Set(rows.map((r: any) => (r.symbol || '').replace('/', '').toUpperCase()))
+              new Set(
+                rows.map((r: any) => 
+                  (r.symbol || '').replace('/', '').toUpperCase()
+                ).filter(Boolean)
+              )
             );
-            fetch('/api/prices/update-symbols', {
+            return fetch('/api/prices/update-symbols', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ symbols }),
-            }).catch(() => {});
+            }).then(() => {
+              symbolsRegistered.current = true;
+              console.log(
+                `[PriceStream] Registered ${symbols.length} symbols`
+              );
+            });
+          } else if (retryCount < maxRetries) {
+            const delay = retryDelays[retryCount] || 30000;
+            retryCount++;
+            console.log(
+              `[PriceStream] No symbols yet, retrying in ${delay}ms ` +
+              `(attempt ${retryCount}/${maxRetries})`
+            );
+            reconnectTimer = setTimeout(registerSymbols, delay);
           }
         })
-        .catch(() => {});
-    }
+        .catch(() => {
+          if (retryCount < maxRetries) {
+            const delay = retryDelays[retryCount] || 30000;
+            retryCount++;
+            reconnectTimer = setTimeout(registerSymbols, delay);
+          }
+        });
+    };
+
+    registerSymbols();
 
     return () => {
       clearTimeout(reconnectTimer);

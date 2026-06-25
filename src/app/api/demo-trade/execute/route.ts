@@ -21,25 +21,8 @@ async function getDecryptedKeys(exchange: string) {
   };
 }
 
-async function executeBinanceTestnetOrder(apiKey: string, secret: string, symbol: string, side: string, quantity: number) {
-  const binanceSymbol = symbol.replace('/', '');
-  const timestamp = Date.now();
-  const queryString = `symbol=${binanceSymbol}&side=${side}&type=MARKET&quantity=${quantity}&timestamp=${timestamp}`;
-  
-  const signature = crypto.createHmac('sha256', secret).update(queryString).digest('hex');
-  const baseUrl = 'https://testnet.binancefuture.com'; // HARDCODED TESTNET
-  
-  const res = await fetch(`${baseUrl}/fapi/v1/order?${queryString}&signature=${signature}`, {
-    method: 'POST',
-    headers: {
-      'X-MBX-APIKEY': apiKey,
-      'Content-Type': 'application/json',
-    },
-  });
-  
-  const data = await res.json();
-  if (!res.ok || data.code < 0) throw new Error(`Binance Testnet error: ${JSON.stringify(data)}`);
-  return data;
+async function executeBinanceTestnetOrder(_apiKey: string, _secret: string, _symbol: string, _side: string, _quantity: number) {
+  throw new Error('Binance does not support demo trading. Use Bybit Demo instead.');
 }
 
 async function executeBybitTestnetOrder(apiKey: string, secret: string, symbol: string, side: string, quantity: number) {
@@ -104,10 +87,10 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
 
-    const supportedExchanges = ['binance', 'bybit'];
+    const supportedExchanges = ['bybit'];
     if (!supportedExchanges.includes(longExchange) || !supportedExchanges.includes(shortExchange)) {
       return NextResponse.json({ 
-        error: `Only Binance and Bybit supported for demo mode. Got: ${longExchange}, ${shortExchange}` 
+        error: `Only Bybit is supported for demo mode. Binance has no demo environment. Got: ${longExchange}, ${shortExchange}` 
       }, { status: 400 });
     }
 
@@ -121,7 +104,7 @@ export async function POST(req: Request) {
 
       if (longExchange === 'binance') {
         const binanceSymbol = symbol.replace('/', '');
-        const precision = await getBinanceQuantityPrecision(binanceSymbol, 'https://testnet.binancefuture.com');
+        const precision = await getBinanceQuantityPrecision(binanceSymbol, 'https://fapi.binance.com');
         longQty = roundToPrecision(longQty, precision);
         console.log(`[Demo Trade] Long: ${longExchange} BUY ${longQty} ${symbol} @ ${longPrice}`);
         results.long = await executeBinanceTestnetOrder(longKeys.apiKey, longKeys.secret, symbol, 'BUY', longQty);
@@ -143,7 +126,7 @@ export async function POST(req: Request) {
 
       if (shortExchange === 'binance') {
         const binanceSymbol = symbol.replace('/', '');
-        const precision = await getBinanceQuantityPrecision(binanceSymbol, 'https://testnet.binancefuture.com');
+        const precision = await getBinanceQuantityPrecision(binanceSymbol, 'https://fapi.binance.com');
         shortQty = roundToPrecision(shortQty, precision);
         console.log(`[Demo Trade] Short: ${shortExchange} SELL ${shortQty} ${symbol} @ ${shortPrice}`);
         results.short = await executeBinanceTestnetOrder(shortKeys.apiKey, shortKeys.secret, symbol, 'SELL', shortQty);

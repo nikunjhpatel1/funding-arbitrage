@@ -7,12 +7,16 @@ export async function GET(request: Request) {
   try {
     const host = request.headers.get('host') || 'localhost:3000';
     const protocol = host.includes('localhost') ? 'http' : 'https';
-    
-    // Hitting the main funding-rates endpoint natively triggers historical saves
-    // and paper trading accruals in the background
-    await fetch(`${protocol}://${host}/api/funding-rates`);
-    
-    return NextResponse.json({ success: true, message: 'Snapshot triggered' });
+
+    // Call the real scanner which fetches live data, saves funding_rate_history,
+    // refreshes scanner_cache, and runs paper trading accrual
+    const res = await fetch(`${protocol}://${host}/api/cron/scanner`, {
+      method: 'GET',
+      headers: { 'x-forwarded-host': host },
+    });
+
+    const data = await res.json().catch(() => ({}));
+    return NextResponse.json({ success: res.ok, message: 'Scanner triggered', ...data });
   } catch (err: any) {
     console.error('Cron snapshot failed:', err);
     return NextResponse.json({ error: err.message }, { status: 500 });
