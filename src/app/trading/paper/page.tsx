@@ -525,11 +525,13 @@ export default function PaperTradingPage() {
               {/* Exchange-specific prices — strict, no market.price fallback */}
               {(() => {
                 const market = marketData.find(m => m.symbol === symbol);
-                // Strict: only show prices that actually come from each specific exchange
-                const lp = market?.exchangePrices?.[longExchange] ?? market?.price;
-                const sp = market?.exchangePrices?.[shortExchange] ?? market?.price;
-                const longMissing = false; // Allow trading with fallback price
-                const shortMissing = false;
+                // Use fallback price if exchange price is missing
+                const rawLp = market?.exchangePrices?.[longExchange];
+                const rawSp = market?.exchangePrices?.[shortExchange];
+                const lp = rawLp ?? market?.price;
+                const sp = rawSp ?? market?.price;
+                const longMissing = rawLp == null;
+                const shortMissing = rawSp == null;
                 
                 const notionalPerLeg = capital * leverage;
                 const longOB = orderbooks[longExchange];
@@ -652,8 +654,8 @@ export default function PaperTradingPage() {
               const hasFundingData = 
                 typeof market?.[longExchange] === 'number' && 
                 typeof market?.[shortExchange] === 'number';
-              // Allow trade if funding data exists, even if live price not yet loaded
-              const canTrade = hasFundingData;
+              // Always allow trade if market exists, we will use fallback price if needed
+              const canTrade = !!market;
               const priceWarning = !longPriceAvail || !shortPriceAvail;
 
               return (

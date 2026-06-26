@@ -68,7 +68,7 @@ export async function POST(req: Request) {
     if (fetchError) {
       console.error('[Supabase] Backtest fetch error', fetchError);
       return NextResponse.json({ 
-        error: `No historical data available yet. The system collects funding rate data every 15 minutes. Try selecting a more recent date range, or check back after the system has been running for a few hours. Technical detail: ${fetchError.message}` 
+        error: `No historical data found for this date range. The system collects data every 15 minutes — try a more recent date range. Details: ${fetchError?.message || 'unknown'}` 
       }, { status: 500 });
     }
 

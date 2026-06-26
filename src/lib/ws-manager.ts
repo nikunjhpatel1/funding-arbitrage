@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { io as ioV4, Socket as SocketV4 } from 'socket.io-client-v4';
 import zlib from 'zlib';
 
-export type ExchangeName = 'binance' | 'bitget' | 'delta' | 'coinswitch' | string;
+export type ExchangeName = 'binance' | 'bitget' | 'delta' | 'coinswitch' | 'pi42' | string;
 
 export interface UnifiedPrice {
   symbol: string;      // e.g. BTCUSDT
@@ -1115,6 +1115,82 @@ class BlofinAdapter extends ExchangeAdapter {
 
 
 
+// ─── PI42 (India) — uses socket.io, pushes ALL market data automatically ───
+class Pi42Adapter extends ExchangeAdapter {
+  private socket: SocketV4 | null = null;
+
+  connect() {
+    try {
+      this.socket = ioV4('https://fawss.pi42.com', {
+        path: '/',
+        transports: ['websocket'],
+        reconnection: false,
+      });
+
+      this.socket.on('connect', () => {
+        console.log('[Pi42] Connected — receiving all market streams');
+        this.updateStatus('Connected', 0);
+      });
+
+      // Pi42 pushes mark price for ALL symbols automatically (no subscription needed)
+      this.socket.on('markPriceArr', (payload: any) => {
+        try {
+          const items: any[] = Array.isArray(payload) ? payload : Object.values(payload);
+          for (const item of items) {
+            const raw = (item.contractPair || item.symbol || '').toUpperCase().replace('/', '');
+            if (!raw) continue;
+            const updates: Partial<UnifiedPrice> = {};
+            if (item.markPrice != null)        updates.markPrice   = parseFloat(item.markPrice);
+            if (item.lastFundingRate != null)   updates.fundingRate = parseFloat(item.lastFundingRate);
+            if (item.nextFundingTime != null)   updates.nextFunding = new Date(item.nextFundingTime).toISOString();
+            if (Object.keys(updates).length > 0) this.updatePrice(raw, updates, Date.now());
+          }
+        } catch {}
+      });
+
+      // Fallback: ticker stream also carries price data
+      this.socket.on('tickerArr', (payload: any) => {
+        try {
+          const items: any[] = Array.isArray(payload) ? payload : Object.values(payload);
+          for (const item of items) {
+            const raw = (item.contractPair || item.symbol || '').toUpperCase().replace('/', '');
+            if (!raw) continue;
+            const updates: Partial<UnifiedPrice> = {};
+            if (item.lastPrice != null)  updates.markPrice = parseFloat(item.lastPrice);
+            if (item.bidPrice != null)   updates.bid       = parseFloat(item.bidPrice);
+            if (item.askPrice != null)   updates.ask       = parseFloat(item.askPrice);
+            if (Object.keys(updates).length > 0) this.updatePrice(raw, updates, Date.now());
+          }
+        } catch {}
+      });
+
+      this.socket.on('disconnect', (reason: string) => {
+        console.log('[Pi42] Disconnected:', reason);
+        this.triggerReconnect();
+      });
+      this.socket.on('connect_error', (err: any) => {
+        console.error('[Pi42] Connection error:', err?.message || err);
+        this.socket?.disconnect();
+        this.triggerReconnect();
+      });
+    } catch (e) {
+      console.error('[Pi42] connect() threw:', e);
+      this.triggerReconnect();
+    }
+  }
+
+  protected disconnect() {
+    super.disconnect();
+    if (this.socket) { this.socket.disconnect(); this.socket = null; }
+  }
+
+  // Pi42 streams everything automatically — no symbol-specific subscription
+  resubscribe() {
+    if (this.socket && this.socket.connected) return; // already receiving all data
+    this.triggerReconnect();
+  }
+}
+
 class CoinSwitchAdapter extends ExchangeAdapter {
   private socket: SocketV4 | null = null;
   
@@ -1128,8 +1204,12 @@ class CoinSwitchAdapter extends ExchangeAdapter {
       this.socket.on('connect', () => {
         console.log('[CoinSwitch] Connected, subscribing to', this.symbols.length, 'symbols');
         this.updateStatus('Connected', 0);
-        this.symbols.forEach(s => {
-          this.socket?.emit('FETCH_TICKER_INFO_CS_PRO', { event: 'subscribe', pair: s });
+        // Stagger subscriptions — firing all of them in one synchronous tick
+        // hits CoinSwitch's per-connection rate limit and silently drops the batch.
+        this.symbols.forEach((s, i) => {
+          setTimeout(() => {
+            this.socket?.emit('FETCH_TICKER_INFO_CS_PRO', { event: 'subscribe', pair: s });
+          }, i * 100);
         });
       });
 
@@ -1181,9 +1261,15 @@ class CoinSwitchAdapter extends ExchangeAdapter {
 
   resubscribe() {
     if (this.socket && this.socket.connected) {
-      this.symbols.forEach(s => {
-        this.socket?.emit('FETCH_TICKER_INFO_CS_PRO', { event: 'subscribe', pair: s });
+      console.log('[CoinSwitch] resubscribe() called with', this.symbols.length, 'symbols');
+      // Staggered for the same rate-limit reason as the connect handler above.
+      this.symbols.forEach((s, i) => {
+        setTimeout(() => {
+          this.socket?.emit('FETCH_TICKER_INFO_CS_PRO', { event: 'subscribe', pair: s });
+        }, i * 100);
       });
+    } else {
+      console.log('[CoinSwitch] resubscribe() called but socket not connected, skipping');
     }
   }
 }
@@ -1226,6 +1312,9 @@ export class WebSocketManager extends EventEmitter {
     this.registerAdapter(new HyperliquidAdapter('hyperliquid', initialArray, this));
     this.registerAdapter(new BlofinAdapter('blofin', initialArray, this));
     this.registerAdapter(new CoinSwitchAdapter('coinswitch', initialArray, this));
+    // Pi42 temporarily disabled — REST host doesn't resolve (uapi.pi42.com) and
+    // WS connection fails outright. Re-enable once both are properly fixed.
+    // this.registerAdapter(new Pi42Adapter('pi42', initialArray, this));
     
     // Broadcast flush interval
     setInterval(() => {
@@ -1337,17 +1426,29 @@ export class WebSocketManager extends EventEmitter {
     
     if (changed) {
       const currentArray = this.getSymbols();
-      let delay = 0;
+      // Step 1: Update symbol list on ALL adapters (no disconnect)
       for (const adapter of this.adapters.values()) {
         adapter.symbols = currentArray;
-        setTimeout(() => {
-          try {
-            adapter.resubscribe();
-          } catch (e) {
-            console.error(`[WS] Failed to resubscribe ${adapter.name}:`, e);
-          }
-        }, delay);
-        delay += 100;
+      }
+      // Step 2: Only resubscribe adapters that are NOT currently connected.
+      // Exception: CoinSwitch's resubscribe() only sends socket.emit messages
+      // (no disconnect), so it is safe to call even when Connected — this fixes
+      // the "subscribing to 0 symbols" issue on first connect.
+      let delay = 0;
+      for (const adapter of this.adapters.values()) {
+        const status = this.statuses.get(adapter.name as ExchangeName);
+        const isSafeToResubscribeWhileConnected = adapter.name === 'coinswitch' || adapter.name === 'pi42';
+        if (status?.status !== 'Connected' || isSafeToResubscribeWhileConnected) {
+          const d = delay;
+          setTimeout(() => {
+            try {
+              adapter.resubscribe();
+            } catch (e) {
+              console.error(`[WS] Failed to resubscribe ${adapter.name}:`, e);
+            }
+          }, d);
+          delay += 200;
+        }
       }
     }
   }
@@ -1356,7 +1457,7 @@ export class WebSocketManager extends EventEmitter {
 // Singleton — cleared on each HMR cycle so adapter code changes take effect immediately
 const globalForWs = global as unknown as { wsManager: WebSocketManager; wsManagerVersion: number };
 
-const CURRENT_VERSION = 12; // increment this number whenever adapter code changes
+const CURRENT_VERSION = 15; // increment this number whenever adapter code changes
 
 if (!globalForWs.wsManager || globalForWs.wsManagerVersion !== CURRENT_VERSION) {
   // Disconnect old instance cleanly if it exists

@@ -14,18 +14,15 @@ export async function GET() {
 
     if (error) throw error;
 
-    const decryptedData = data.map(row => ({
-      id: row.id,
+    const safeData = data.map(row => ({
       exchange: row.exchange,
+      mode: 'demo',
       is_active: row.is_active,
       tested_at: row.tested_at,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      apiKey: row.api_key_encrypted ? decrypt(row.api_key_encrypted) : '',
-      secret: row.secret_encrypted ? decrypt(row.secret_encrypted) : '',
+      has_key: !!row.api_key_encrypted && !!row.secret_encrypted
     }));
 
-    return NextResponse.json({ success: true, data: decryptedData });
+    return NextResponse.json({ success: true, data: safeData });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
   }

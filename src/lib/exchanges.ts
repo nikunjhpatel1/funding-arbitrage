@@ -24,6 +24,7 @@ export const ALL_EXCHANGES_CONFIG: ExchangeConfig[] = [
   { id: 'blofin',      name: 'BloFin',       color: '#2A2E39', group: 'more' },
   { id: 'delta',       name: 'Delta',        color: '#5500FF', group: 'more' },
   { id: 'coinswitch',  name: 'CoinSwitch',   color: '#0F52BA', group: 'more' },
+  { id: 'pi42',        name: 'Pi42',         color: '#FF6B35', group: 'more' },
 ];
 
 export const EXCHANGE_NAMES: Record<string, string> = Object.fromEntries(

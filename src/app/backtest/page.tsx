@@ -250,9 +250,7 @@ export default function BacktestPage() {
           {error && (
             <div style={{ marginTop: '1rem', padding: '10px 14px', background: 'rgba(244,63,94,0.1)', color: 'var(--negative)', borderRadius: 8, fontSize: '0.85rem', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
               <AlertTriangle size={16} style={{ flexShrink: 0, marginTop: 2 }} /> 
-              {error === 'Database fetch error' 
-                ? 'No historical data available yet for this date range. The system collects data every 15 minutes. Please try a recent date range or check back after a few hours of data collection.'
-                : error}
+              {error}
             </div>
           )}
         </div>

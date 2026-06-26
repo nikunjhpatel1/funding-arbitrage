@@ -882,6 +882,42 @@ async function fetchCoinSwitch(bases: Iterable<string>, deadline: number): Promi
   return { data, ok: anySuccess || data.size > 0 };
 }
 
+/**
+ * Pi42 (India) — perpetual futures in INR and USDT
+ * REST: https://uapi.pi42.com/v1/exchange/exchangeInfo
+ * Fetches all perpetual contracts at once (no per-symbol requests needed)
+ */
+async function fetchPi42(_bases: Iterable<string>, _deadline: number): Promise<FetchResult<SimpleRateData>> {
+  const data = new Map<string, SimpleRateData>();
+  try {
+    const res = await fetchWithTimeout('https://uapi.pi42.com/v1/exchange/exchangeInfo', { timeout: 10000 });
+    if (!res.ok) return { data, ok: false };
+    const json = await res.json();
+    // exchangeInfo returns a list of contracts
+    const contracts: any[] = json?.data?.contracts || json?.contracts || [];
+    for (const c of contracts) {
+      // Only process USDT-margined perpetuals for comparability with other exchanges
+      if (c.quoteAsset !== 'USDT' && c.marginAsset !== 'USDT') continue;
+      const base = (c.baseAsset || '').toUpperCase();
+      if (!base) continue;
+      const rate = parseRate(c.lastFundingRate ?? c.fundingRate);
+      if (rate === null) continue;
+      const interval = parseInt(c.fundingFeeInterval ?? '8', 10) || 8;
+      const price = parseFloat(c.lastPrice ?? c.markPrice ?? '0') || 0;
+      data.set(base, {
+        rate,
+        interval,
+        price: price > 0 ? price : undefined,
+        nextFunding: c.nextFundingTime ? new Date(c.nextFundingTime).toISOString() : undefined,
+      });
+    }
+  } catch (e) {
+    console.error('[Pi42] Fetch error:', e);
+    return { data, ok: false };
+  }
+  return { data, ok: data.size > 0 };
+}
+
 // ─── Top coins for per-symbol Phase-2 fetches ─────────────────────────────────
 // We only query per-symbol exchanges for well-known coins to avoid making
 // hundreds of requests (which would time out on Vercel Hobby's 10 s limit).
@@ -947,7 +983,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
 
   const [
     binance, bybit, gateio, bitmex, phemex, delta, dydx, hyperliquid,
-    okx, bitget, mexc, kucoin, bingx, htx, blofin, coinswitch
+    okx, bitget, mexc, kucoin, bingx, htx, blofin, coinswitch, pi42
   ] = await Promise.all([
     // Batch
     withDeadline(getCachedOrFetch('binance', () => fetchBinance()), deadlineMs).then(r => r ?? { data: new Map(), intervalMap: new Map(), ok: false }),
@@ -967,6 +1003,9 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     getCachedOrFetch('htx', () => fetchHTX(phase2Bases, deadline)),
     getCachedOrFetch('blofin', () => fetchBloFin(phase2Bases, deadline)),
     getCachedOrFetch('coinswitch', () => fetchCoinSwitch(phase2Bases, deadline)),
+    // pi42 temporarily disabled — uapi.pi42.com doesn't resolve, was stealing
+    // time budget from other exchanges (causing BitMEX/Phemex/Hyperliquid aborts)
+    Promise.resolve({ data: new Map(), ok: false } as FetchResult<SimpleRateData>),
   ]);
 
   // Build the master base set from all batch results
@@ -988,6 +1027,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
   for (const [b] of bingx.data) allBases.add(b);
   for (const [b] of blofin.data) allBases.add(b);
   for (const [b] of coinswitch.data) allBases.add(b);
+  for (const [b] of pi42.data) allBases.add(b);
 
   const exchangeStatus: Record<string, 'ok' | 'stale' | 'error'> = {
     binance: binance.ok ? 'ok' : (binance as any).fromCache ? 'stale' : 'error',
@@ -1006,6 +1046,7 @@ async function performFetch(budgetMs: number): Promise<ApiResponse> {
     blofin: blofin.ok ? 'ok' : (blofin as any).fromCache ? 'stale' : 'error',
     delta: delta.ok ? 'ok' : (delta as any).fromCache ? 'stale' : 'error',
     coinswitch: coinswitch.ok ? 'ok' : (coinswitch as any).fromCache ? 'stale' : 'error',
+    pi42: pi42.ok ? 'ok' : (pi42 as any).fromCache ? 'stale' : 'error',
   };
 
   // ── Assemble entries ──────────────────────────────────────────────────────

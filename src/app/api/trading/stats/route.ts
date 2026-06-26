@@ -27,9 +27,9 @@ export async function GET(req: Request) {
 
   try {
     const [posRes, closedRes, logsRes] = await Promise.all([
-      supabase.from(`${prefix}_positions`).select('*').eq('status', 'OPEN').order('opened_at', { ascending: false }),
-      supabase.from(`${prefix}_positions`).select('realized_pnl, status').eq('status', 'CLOSED'),
-      supabase.from(`${prefix}_execution_logs`).select('*').order('created_at', { ascending: false }).limit(30),
+      supabase.from(`${prefix}_positions`).select('*').eq('status', 'OPEN').eq('mode', mode).order('opened_at', { ascending: false }),
+      supabase.from(`${prefix}_positions`).select('realized_pnl, status').eq('status', 'CLOSED').eq('mode', mode),
+      supabase.from(`${prefix}_execution_logs`).select('*').eq('mode', mode).order('created_at', { ascending: false }).limit(30),
     ]);
 
     const openPositions = posRes.data || [];
